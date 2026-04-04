@@ -8,7 +8,7 @@ import (
 )
 
 func TestIsManagedLoadBalancerService(t *testing.T) {
-	class := "k8s-lb-controller"
+	class := "iedge.local/service-lb"
 	otherClass := "diploma.local/other"
 
 	tests := []struct {

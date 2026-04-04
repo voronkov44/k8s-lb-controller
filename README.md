@@ -47,7 +47,7 @@
 | `K8S_LB_CONTROLLER_METRICS_ADDR` | `:8080` |
 | `K8S_LB_CONTROLLER_HEALTH_ADDR` | `:8081` |
 | `K8S_LB_CONTROLLER_LEADER_ELECT` | `false` |
-| `K8S_LB_CONTROLLER_LOAD_BALANCER_CLASS` | `k8s-lb-controller` |
+| `K8S_LB_CONTROLLER_LOAD_BALANCER_CLASS` | `iedge.local/service-lb` |
 | `K8S_LB_CONTROLLER_REQUEUE_AFTER` | `30s` |
 | `K8S_LB_CONTROLLER_LOG_LEVEL` | `info` |
 
@@ -91,7 +91,7 @@ metadata:
   name: demo
 spec:
   type: LoadBalancer
-  loadBalancerClass: k8s-lb-controller
+  loadBalancerClass: iedge.local/service-lb
   selector:
     app: demo
   ports:

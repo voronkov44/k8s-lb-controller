@@ -68,7 +68,7 @@ spec:
         - name: K8S_LB_CONTROLLER_LEADER_ELECT
           value: "true"
         - name: K8S_LB_CONTROLLER_LOAD_BALANCER_CLASS
-          value: "k8s-lb-controller"
+          value: "iedge.local/service-lb"
         - name: K8S_LB_CONTROLLER_REQUEUE_AFTER
           value: "30s"
         - name: K8S_LB_CONTROLLER_LOG_LEVEL

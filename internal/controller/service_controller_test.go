@@ -23,7 +23,7 @@ func TestServiceReconcilerReconcile(t *testing.T) {
 	}
 
 	requeueAfter := 30 * time.Second
-	class := "k8s-lb-controller"
+	class := "iedge.local/service-lb"
 
 	tests := []struct {
 		name       string

@@ -35,7 +35,7 @@ const (
 	// DefaultLeaderElect is the default leader election setting.
 	DefaultLeaderElect = false
 	// DefaultLoadBalancerClass is the default Service load balancer class processed by the controller.
-	DefaultLoadBalancerClass = "k8s-lb-controller"
+	DefaultLoadBalancerClass = "iedge.local/service-lb"
 	// DefaultRequeueAfter is the default reconciliation requeue interval for matching Services.
 	DefaultRequeueAfter = 30 * time.Second
 	// DefaultLogLevel is the default structured log level.

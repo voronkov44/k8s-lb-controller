@@ -183,7 +183,7 @@ metadata:
   namespace: k8s-lb-controller-e2e
 spec:
   type: LoadBalancer
-  loadBalancerClass: k8s-lb-controller
+  loadBalancerClass: iedge.local/service-lb
   selector:
     app: demo
   ports:
@@ -219,7 +219,7 @@ spec:
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(logs).To(ContainSubstring("service matched controller selection"))
 				g.Expect(logs).To(ContainSubstring("demo-matching"))
-				g.Expect(logs).To(ContainSubstring("k8s-lb-controller"))
+				g.Expect(logs).To(ContainSubstring("iedge.local/service-lb"))
 			}, 2*time.Minute, time.Second).Should(Succeed())
 
 			Consistently(func(g Gomega) {
