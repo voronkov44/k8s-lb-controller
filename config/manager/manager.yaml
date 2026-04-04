@@ -60,12 +60,28 @@ spec:
       containers:
       - command:
         - /manager
-        args:
-          - --leader-elect
-          - --health-probe-bind-address=:8081
+        env:
+        - name: K8S_LB_CONTROLLER_METRICS_ADDR
+          value: ":8080"
+        - name: K8S_LB_CONTROLLER_HEALTH_ADDR
+          value: ":8081"
+        - name: K8S_LB_CONTROLLER_LEADER_ELECT
+          value: "true"
+        - name: K8S_LB_CONTROLLER_LOAD_BALANCER_CLASS
+          value: "k8s-lb-controller"
+        - name: K8S_LB_CONTROLLER_REQUEUE_AFTER
+          value: "30s"
+        - name: K8S_LB_CONTROLLER_LOG_LEVEL
+          value: "info"
         image: controller:latest
         name: manager
-        ports: []
+        ports:
+        - containerPort: 8080
+          name: metrics
+          protocol: TCP
+        - containerPort: 8081
+          name: probes
+          protocol: TCP
         securityContext:
           readOnlyRootFilesystem: true
           allowPrivilegeEscalation: false

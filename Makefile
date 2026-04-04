@@ -1,6 +1,34 @@
 # Image URL to use all building/pushing image targets
 IMG ?= controller:latest
 
+# Pin the Go toolchain used by make targets to match go.mod and CI.
+GOTOOLCHAIN ?= go1.26.1
+export GOTOOLCHAIN
+
+# Use a repository-local Go build cache to avoid permissions issues and mixed toolchain caches.
+GOCACHE ?= $(shell pwd)/.cache/go-build
+export GOCACHE
+
+# Use a repository-local golangci-lint cache for reproducible local runs.
+GOLANGCI_LINT_CACHE ?= $(shell pwd)/.cache/golangci-lint
+export GOLANGCI_LINT_CACHE
+
+ENV_FILE ?= .env
+ENV_FILE_VARS := \
+	K8S_LB_CONTROLLER_METRICS_ADDR \
+	K8S_LB_CONTROLLER_HEALTH_ADDR \
+	K8S_LB_CONTROLLER_LEADER_ELECT \
+	K8S_LB_CONTROLLER_LOAD_BALANCER_CLASS \
+	K8S_LB_CONTROLLER_REQUEUE_AFTER \
+	K8S_LB_CONTROLLER_LOG_LEVEL
+
+# Load variables from .env when present, but keep existing shell/CI environment values.
+ifneq (,$(wildcard $(ENV_FILE)))
+include $(ENV_FILE)
+$(foreach var,$(ENV_FILE_VARS),$(if $(shell printenv $(var)),$(eval $(var) := $(shell printenv $(var))),))
+export $(ENV_FILE_VARS)
+endif
+
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
 GOBIN=$(shell go env GOPATH)/bin
@@ -61,10 +89,8 @@ vet: ## Run go vet against code.
 test: manifests generate fmt vet setup-envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
-# TODO(user): To use a different vendor for e2e tests, modify the setup under 'tests/e2e'.
-# The default setup assumes Kind is pre-installed and builds/loads the Manager Docker image locally.
-# CertManager is installed by default; skip with:
-# - CERT_MANAGER_INSTALL_SKIP=true
+# The default e2e setup assumes Kind is pre-installed and builds/loads the manager image locally.
+# Adjust test/e2e if you switch to a different local Kubernetes provider.
 KIND_CLUSTER ?= k8s-lb-controller-test-e2e
 
 .PHONY: setup-test-e2e
@@ -109,7 +135,7 @@ build: manifests generate fmt vet ## Build manager binary.
 	go build -o bin/manager cmd/main.go
 
 .PHONY: run
-run: manifests generate fmt vet ## Run a controller from your host.
+run: manifests generate fmt vet ## Run a controller from your host with .env support when available.
 	go run ./cmd/main.go
 
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
