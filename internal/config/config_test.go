@@ -49,6 +49,18 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.LogLevel != DefaultLogLevel {
 		t.Fatalf("LogLevel = %q, want %q", cfg.LogLevel, DefaultLogLevel)
 	}
+
+	if cfg.HAProxyConfigPath != DefaultHAProxyConfigPath {
+		t.Fatalf("HAProxyConfigPath = %q, want %q", cfg.HAProxyConfigPath, DefaultHAProxyConfigPath)
+	}
+
+	if cfg.HAProxyValidateCommand != DefaultHAProxyValidateCommand {
+		t.Fatalf("HAProxyValidateCommand = %q, want %q", cfg.HAProxyValidateCommand, DefaultHAProxyValidateCommand)
+	}
+
+	if cfg.HAProxyReloadCommand != DefaultHAProxyReloadCommand {
+		t.Fatalf("HAProxyReloadCommand = %q, want %q", cfg.HAProxyReloadCommand, DefaultHAProxyReloadCommand)
+	}
 }
 
 func TestLoadOverrides(t *testing.T) {
@@ -61,6 +73,9 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv(EnvIPPool, "203.0.113.20, 203.0.113.21 , ,203.0.113.22")
 	t.Setenv(EnvRequeueAfter, "45s")
 	t.Setenv(EnvLogLevel, "DEBUG")
+	t.Setenv(EnvHAProxyConfigPath, "/var/run/haproxy/controller.cfg")
+	t.Setenv(EnvHAProxyValidateCommand, "haproxy -c -f {{config}}")
+	t.Setenv(EnvHAProxyReloadCommand, "service haproxy reload")
 
 	cfg, err := Load()
 	if err != nil {
@@ -98,6 +113,18 @@ func TestLoadOverrides(t *testing.T) {
 
 	if cfg.LogLevel != LogLevelDebug {
 		t.Fatalf("LogLevel = %q, want %q", cfg.LogLevel, LogLevelDebug)
+	}
+
+	if cfg.HAProxyConfigPath != "/var/run/haproxy/controller.cfg" {
+		t.Fatalf("HAProxyConfigPath = %q, want %q", cfg.HAProxyConfigPath, "/var/run/haproxy/controller.cfg")
+	}
+
+	if cfg.HAProxyValidateCommand != "haproxy -c -f {{config}}" {
+		t.Fatalf("HAProxyValidateCommand = %q, want %q", cfg.HAProxyValidateCommand, "haproxy -c -f {{config}}")
+	}
+
+	if cfg.HAProxyReloadCommand != "service haproxy reload" {
+		t.Fatalf("HAProxyReloadCommand = %q, want %q", cfg.HAProxyReloadCommand, "service haproxy reload")
 	}
 }
 
@@ -152,7 +179,8 @@ func TestLoadDotEnvLoadsFileWithoutOverridingEnvironment(t *testing.T) {
 	content := []byte("K8S_LB_CONTROLLER_METRICS_ADDR=:19090\n" +
 		"K8S_LB_CONTROLLER_LOAD_BALANCER_CLASS=from-dotenv\n" +
 		"K8S_LB_CONTROLLER_IP_POOL=203.0.113.30,203.0.113.31\n" +
-		"K8S_LB_CONTROLLER_LOG_LEVEL=warn\n")
+		"K8S_LB_CONTROLLER_LOG_LEVEL=warn\n" +
+		"K8S_LB_CONTROLLER_HAPROXY_CONFIG_PATH=/tmp/from-dotenv.cfg\n")
 	if err := os.WriteFile(filepath.Join(dir, DotEnvFileName), content, 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
@@ -194,6 +222,10 @@ func TestLoadDotEnvLoadsFileWithoutOverridingEnvironment(t *testing.T) {
 	if cfg.LogLevel != LogLevelWarn {
 		t.Fatalf("LogLevel = %q, want %q", cfg.LogLevel, LogLevelWarn)
 	}
+
+	if cfg.HAProxyConfigPath != "/tmp/from-dotenv.cfg" {
+		t.Fatalf("HAProxyConfigPath = %q, want %q", cfg.HAProxyConfigPath, "/tmp/from-dotenv.cfg")
+	}
 }
 
 func setConfigEnvToEmpty(t *testing.T) {
@@ -206,6 +238,9 @@ func setConfigEnvToEmpty(t *testing.T) {
 	t.Setenv(EnvIPPool, "")
 	t.Setenv(EnvRequeueAfter, "")
 	t.Setenv(EnvLogLevel, "")
+	t.Setenv(EnvHAProxyConfigPath, "")
+	t.Setenv(EnvHAProxyValidateCommand, "")
+	t.Setenv(EnvHAProxyReloadCommand, "")
 }
 
 func unsetConfigEnv(t *testing.T) {
@@ -219,6 +254,9 @@ func unsetConfigEnv(t *testing.T) {
 		EnvIPPool,
 		EnvRequeueAfter,
 		EnvLogLevel,
+		EnvHAProxyConfigPath,
+		EnvHAProxyValidateCommand,
+		EnvHAProxyReloadCommand,
 	}
 
 	saved := make(map[string]*string, len(keys))

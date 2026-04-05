@@ -9,6 +9,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -115,6 +116,14 @@ func TestServiceReconcilerReconcileEnsuresManagedService(t *testing.T) {
 	if providerService.ExternalIP != "203.0.113.10" {
 		t.Fatalf("provider ExternalIP = %q, want %q", providerService.ExternalIP, "203.0.113.10")
 	}
+
+	if len(providerService.Ports) != 1 {
+		t.Fatalf("provider Ports len = %d, want 1", len(providerService.Ports))
+	}
+
+	if len(providerService.Ports[0].Backends) != 0 {
+		t.Fatalf("provider backends = %+v, want empty slice", providerService.Ports[0].Backends)
+	}
 }
 
 func TestServiceReconcilerReconcileDoesNotRewriteStatusOnSecondPass(t *testing.T) {
@@ -143,6 +152,109 @@ func TestServiceReconcilerReconcileDoesNotRewriteStatusOnSecondPass(t *testing.T
 
 	if len(fakeProvider.ensureCalls) != 2 {
 		t.Fatalf("provider ensure calls = %d, want 2", len(fakeProvider.ensureCalls))
+	}
+}
+
+func TestServiceReconcilerReconcileDiscoversEndpointSliceBackends(t *testing.T) {
+	class := managedServiceClass
+	service := newReconcileService("demo", "default", corev1.ServiceTypeLoadBalancer, &class)
+	endpointSlice := newEndpointSlice(
+		"demo-1",
+		"default",
+		"demo",
+		"http",
+		8080,
+		[]endpointAddress{{ip: "10.0.0.2", ready: true}, {ip: "10.0.0.1", ready: true}, {ip: "2001:db8::1", ready: true}},
+	)
+	notReadySlice := newEndpointSlice(
+		"demo-2",
+		"default",
+		"demo",
+		"http",
+		8080,
+		[]endpointAddress{{ip: "10.0.0.3", ready: false}},
+	)
+
+	reconciler, _, fakeProvider := newTestServiceReconciler(t, nil, service, endpointSlice, notReadySlice)
+
+	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "default", Name: "demo"},
+	}); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+
+	stored, ok := fakeProvider.Get(provider.ServiceRef{Namespace: "default", Name: "demo"})
+	if !ok {
+		t.Fatal("provider state missing for default/demo")
+	}
+
+	wantBackends := []provider.BackendEndpoint{
+		{Address: "10.0.0.1", Port: 8080},
+		{Address: "10.0.0.2", Port: 8080},
+	}
+	if len(stored.Ports) != 1 {
+		t.Fatalf("provider Ports len = %d, want 1", len(stored.Ports))
+	}
+
+	if len(stored.Ports[0].Backends) != len(wantBackends) {
+		t.Fatalf("provider backends len = %d, want %d", len(stored.Ports[0].Backends), len(wantBackends))
+	}
+
+	for index, backend := range wantBackends {
+		if stored.Ports[0].Backends[index] != backend {
+			t.Fatalf("provider backend[%d] = %+v, want %+v", index, stored.Ports[0].Backends[index], backend)
+		}
+	}
+}
+
+func TestServiceReconcilerReconcileUpdatesProviderStateWhenEndpointSliceChanges(t *testing.T) {
+	class := managedServiceClass
+	service := newReconcileService("demo", "default", corev1.ServiceTypeLoadBalancer, &class)
+	endpointSlice := newEndpointSlice(
+		"demo-1",
+		"default",
+		"demo",
+		"http",
+		8080,
+		[]endpointAddress{{ip: "10.0.0.1", ready: true}},
+	)
+
+	reconciler, countingClient, fakeProvider := newTestServiceReconciler(t, nil, service, endpointSlice)
+	request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "demo"}}
+
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("first Reconcile() error = %v", err)
+	}
+
+	updatedEndpointSlice := endpointSlice.DeepCopy()
+	updatedReady := true
+	updatedEndpointSlice.Endpoints = []discoveryv1.Endpoint{
+		{
+			Addresses: []string{"10.0.0.5"},
+			Conditions: discoveryv1.EndpointConditions{
+				Ready: &updatedReady,
+			},
+		},
+	}
+	if err := countingClient.Update(context.Background(), updatedEndpointSlice); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("second Reconcile() error = %v", err)
+	}
+
+	if len(fakeProvider.ensureCalls) != 2 {
+		t.Fatalf("provider ensure calls = %d, want 2", len(fakeProvider.ensureCalls))
+	}
+
+	lastEnsure := fakeProvider.ensureCalls[len(fakeProvider.ensureCalls)-1]
+	if len(lastEnsure.Ports) != 1 || len(lastEnsure.Ports[0].Backends) != 1 {
+		t.Fatalf("last ensure backends = %+v, want one backend", lastEnsure.Ports)
+	}
+
+	if lastEnsure.Ports[0].Backends[0] != (provider.BackendEndpoint{Address: "10.0.0.5", Port: 8080}) {
+		t.Fatalf("last ensure backend = %+v, want 10.0.0.5:8080", lastEnsure.Ports[0].Backends[0])
 	}
 }
 
@@ -299,6 +411,38 @@ func TestServiceReconcilerReconcileProviderDeleteErrorKeepsFinalizer(t *testing.
 	}
 }
 
+func TestServiceReconcilerEndpointSliceToServiceRequests(t *testing.T) {
+	reconciler := &ServiceReconciler{}
+
+	requests := reconciler.endpointSliceToServiceRequests(context.Background(), &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo-1",
+			Namespace: "default",
+			Labels: map[string]string{
+				discoveryv1.LabelServiceName: "demo",
+			},
+		},
+	})
+
+	if len(requests) != 1 {
+		t.Fatalf("endpointSliceToServiceRequests() len = %d, want 1", len(requests))
+	}
+
+	if requests[0].NamespacedName != (types.NamespacedName{Namespace: "default", Name: "demo"}) {
+		t.Fatalf("endpointSliceToServiceRequests() = %+v, want default/demo", requests[0].NamespacedName)
+	}
+
+	requests = reconciler.endpointSliceToServiceRequests(context.Background(), &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "missing-label",
+			Namespace: "default",
+		},
+	})
+	if len(requests) != 0 {
+		t.Fatalf("endpointSliceToServiceRequests() len = %d, want 0", len(requests))
+	}
+}
+
 func newTestServiceReconciler(
 	t *testing.T,
 	serviceProvider provider.Provider,
@@ -403,6 +547,51 @@ func newDeletingReconcileService(
 	service.DeletionTimestamp = deletedAt
 	service.Finalizers = []string{serviceFinalizer}
 	return service
+}
+
+type endpointAddress struct {
+	ip    string
+	ready bool
+}
+
+func newEndpointSlice(
+	name, namespace, serviceName, portName string,
+	port int32,
+	addresses []endpointAddress,
+) *discoveryv1.EndpointSlice {
+	endpoints := make([]discoveryv1.Endpoint, 0, len(addresses))
+	for _, address := range addresses {
+		ready := address.ready
+		endpoints = append(endpoints, discoveryv1.Endpoint{
+			Addresses: []string{address.ip},
+			Conditions: discoveryv1.EndpointConditions{
+				Ready: &ready,
+			},
+		})
+	}
+
+	portNameCopy := portName
+	portCopy := port
+	protocol := corev1.ProtocolTCP
+
+	return &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels: map[string]string{
+				discoveryv1.LabelServiceName: serviceName,
+			},
+		},
+		AddressType: discoveryv1.AddressTypeIPv4,
+		Ports: []discoveryv1.EndpointPort{
+			{
+				Name:     &portNameCopy,
+				Port:     &portCopy,
+				Protocol: &protocol,
+			},
+		},
+		Endpoints: endpoints,
+	}
 }
 
 type countingClient struct {

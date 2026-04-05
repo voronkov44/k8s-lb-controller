@@ -2,6 +2,7 @@ package controller
 
 import (
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 )
@@ -50,6 +51,29 @@ func serviceReconcilePredicate() predicate.Predicate {
 		},
 		DeleteFunc: func(_ event.DeleteEvent) bool {
 			return false
+		},
+		GenericFunc: func(_ event.GenericEvent) bool {
+			return false
+		},
+	}
+}
+
+func endpointSliceReconcilePredicate() predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc: func(_ event.CreateEvent) bool {
+			return true
+		},
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldEndpointSlice, oldOK := e.ObjectOld.(*discoveryv1.EndpointSlice)
+			newEndpointSlice, newOK := e.ObjectNew.(*discoveryv1.EndpointSlice)
+			if !oldOK || !newOK {
+				return true
+			}
+
+			return oldEndpointSlice.ResourceVersion != newEndpointSlice.ResourceVersion
+		},
+		DeleteFunc: func(_ event.DeleteEvent) bool {
+			return true
 		},
 		GenericFunc: func(_ event.GenericEvent) bool {
 			return false

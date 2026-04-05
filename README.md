@@ -1,61 +1,101 @@
 # k8s-lb-controller
 
 `k8s-lb-controller` is a Kubernetes controller built with Kubebuilder and `controller-runtime`.
-Проект развивается поэтапно как контроллер для `Service` типа `LoadBalancer` без CRD и пока использует только built-in ресурс `core/v1 Service`.
+Проект развивается инкрементально как MVP-контроллер для `Service` типа `LoadBalancer` без CRD и пока работает только с built-in ресурсами Kubernetes.
 
 ## Текущий статус
 
-Сейчас реализована Phase 3 baseline:
+Сейчас реализована Phase 4 baseline:
 
+- scaffold Kubebuilder сохранён
+- built-in managed object остаётся `core/v1 Service`
 - фильтрация managed `Service` по:
   - `spec.type == LoadBalancer`
   - `spec.loadBalancerClass != nil`
   - `spec.loadBalancerClass == K8S_LB_CONTROLLER_LOAD_BALANCER_CLASS`
 - статический IPAM поверх `K8S_LB_CONTROLLER_IP_POOL`
-- обновление `.status.loadBalancer.ingress`
-- идемпотентный reconcile без лишних status update
-- mock provider с in-memory state
+- идемпотентное обновление `.status.loadBalancer.ingress`
 - finalizer на managed `Service`
 - cleanup provider state при удалении `Service`
+- backend discovery через `discovery.k8s.io/v1 EndpointSlice`
+- real file-based HAProxy provider
+- детерминированный render полного HAProxy config
+- atomic write итогового конфига
+- optional validate/reload commands
 
-## Что именно умеет контроллер
+## Что именно делает контроллер
 
 Для matching `Service` контроллер:
 
 1. добавляет finalizer `iedge.local/service-lb-finalizer`
 2. выделяет или переиспользует внешний IP из configured static pool
 3. записывает IP в `.status.loadBalancer.ingress`
-4. синхронизирует desired state в mock provider
-5. повторно не переписывает status без необходимости
+4. читает связанные `EndpointSlice`
+5. извлекает только ready IPv4 backend endpoints
+6. строит desired provider model: namespace, service name, class, external IP, service ports, backends
+7. передаёт desired state в HAProxy provider
 
 Для deleting managed `Service` контроллер:
 
 1. видит `DeletionTimestamp`
-2. вызывает cleanup в mock provider
-3. удаляет finalizer
-4. не оставляет объект зависшим в `Terminating`
+2. вызывает cleanup в provider
+3. пересобирает HAProxy config без удаляемого `Service`
+4. снимает finalizer только после успешного cleanup
 
-Важно: provider state сейчас только mock/in-memory и нужен как подготовка к будущему реальному HAProxy provider.
+## EndpointSlice discovery
 
-## Пока сознательно не реализовано
+Phase 4 использует `EndpointSlice` как единственный источник backend discovery.
 
-- реальный HAProxy provider
-- EndpointSlice logic
-- backend discovery
-- multi-port backend behavior
-- CRD
-- Helm chart
-- persistent provider state
-- cleanup `Service.status` при удалении
+Текущий baseline:
 
-## Структура
+- `EndpointSlice` ищутся по namespace и label `kubernetes.io/service-name=<service-name>`
+- watcher на `EndpointSlice` маппит изменения обратно в конкретный owning `Service`
+- Pod watch отдельно не используется
+- берутся только ready endpoints
+- используется только IPv4
+- backend ordering детерминированный
+- если backend'ов нет, provider всё равно получает корректное desired state
 
-- `cmd/main.go` — entrypoint и wiring зависимостей
-- `internal/config` — env-конфиг
-- `internal/controller` — reconcile, filtering, finalizer flow
-- `internal/ipam` — stateless-ish IP allocation
-- `internal/status` — helper для `Service.status.loadBalancer.ingress`
-- `internal/provider` — provider interface и mock provider
+Порты матчятся простым и понятным образом:
+
+- по имени `ServicePort.Name`
+- либо по `targetPort`, если он задан именем
+- либо по numeric `targetPort`
+- если `targetPort` не задан, используется service port number
+
+## HAProxy provider
+
+Провайдер расположен в `internal/provider/haproxy`.
+
+Текущая модель:
+
+- controller собирает desired state для всех managed `Service`
+- provider хранит aggregate state in-memory внутри процесса
+- на каждом `Ensure` и `Delete` provider пересобирает полный итоговый config
+- config рендерится детерминированно
+- candidate config сначала пишется во временный файл
+- затем файл атомарно заменяет active config
+- после этого optionally выполняется reload command
+
+Провайдер потокобезопасный, идемпотентный и не использует `panic`.
+
+### Формат baseline config
+
+Для каждого managed service port создаются:
+
+- один `frontend`
+- один `backend`
+
+Baseline сейчас такой:
+
+- `bind <externalIP>:<servicePort>`
+- `mode tcp`
+- `default_backend <derived-name>`
+- `server <derived-name> <backend-ip>:<backend-port>`
+
+Если backend'ов нет, provider рендерит disabled placeholder server, чтобы config оставался валидным.
+
+Имена `frontend`/`backend`/`server` санитизируются и воспроизводимы.
 
 ## Переменные окружения
 
@@ -74,6 +114,9 @@
 | `K8S_LB_CONTROLLER_IP_POOL` | `203.0.113.10,203.0.113.11,203.0.113.12` |
 | `K8S_LB_CONTROLLER_REQUEUE_AFTER` | `30s` |
 | `K8S_LB_CONTROLLER_LOG_LEVEL` | `info` |
+| `K8S_LB_CONTROLLER_HAPROXY_CONFIG_PATH` | `/tmp/k8s-lb-controller-haproxy.cfg` |
+| `K8S_LB_CONTROLLER_HAPROXY_VALIDATE_COMMAND` | empty |
+| `K8S_LB_CONTROLLER_HAPROXY_RELOAD_COMMAND` | empty |
 
 Поддерживаемые уровни логирования: `debug`, `info`, `warn`, `error`.
 
@@ -87,7 +130,39 @@ K8S_LB_CONTROLLER_LOAD_BALANCER_CLASS=iedge.local/service-lb
 K8S_LB_CONTROLLER_IP_POOL=203.0.113.10,203.0.113.11,203.0.113.12
 K8S_LB_CONTROLLER_REQUEUE_AFTER=30s
 K8S_LB_CONTROLLER_LOG_LEVEL=info
+K8S_LB_CONTROLLER_HAPROXY_CONFIG_PATH=/tmp/k8s-lb-controller-haproxy.cfg
+K8S_LB_CONTROLLER_HAPROXY_VALIDATE_COMMAND=
+K8S_LB_CONTROLLER_HAPROXY_RELOAD_COMMAND=
 ```
+
+### Validate / reload commands
+
+Обе команды optional.
+
+- если `VALIDATE_COMMAND` пустой, config просто атомарно записывается
+- если `RELOAD_COMMAND` пустой, это считается нормальным dev/demo режимом
+- placeholder `{{config}}` заменяется на путь к config file
+  - для validate это candidate path
+  - для reload это active path
+
+Пример validate-only:
+
+```dotenv
+K8S_LB_CONTROLLER_HAPROXY_VALIDATE_COMMAND=haproxy -c -f {{config}}
+```
+
+Пример validate + reload через helper binary:
+
+```dotenv
+K8S_LB_CONTROLLER_HAPROXY_VALIDATE_COMMAND=haproxy -c -f {{config}}
+K8S_LB_CONTROLLER_HAPROXY_RELOAD_COMMAND=/usr/local/bin/haproxy-reload {{config}}
+```
+
+Важно:
+
+- команды разбиваются по пробелам без shell parsing
+- для сложной reload-логики лучше использовать wrapper binary/script в собственном image
+- default manager image distroless, поэтому shell utilities внутри контейнера по умолчанию отсутствуют
 
 ## Локальный запуск
 
@@ -102,7 +177,13 @@ make run
 make run
 ```
 
-## Пример matching Service
+В dev-mode без reload command можно просто смотреть сгенерированный config локально:
+
+```sh
+cat /tmp/k8s-lb-controller-haproxy.cfg
+```
+
+## Пример managed Service
 
 ```yaml
 apiVersion: v1
@@ -176,24 +257,43 @@ spec:
 EOF
 ```
 
-Проверить `EXTERNAL-IP` и finalizer:
+Проверить `EXTERNAL-IP`, finalizer и связанные `EndpointSlice`:
 
 ```sh
 kubectl get svc demo -n demo
 kubectl get svc demo -n demo -o jsonpath='{.status.loadBalancer.ingress[0].ip}'; echo
 kubectl get svc demo -n demo -o jsonpath='{.metadata.finalizers}'; echo
+kubectl get endpointslice -n demo -l kubernetes.io/service-name=demo
 ```
 
 Ожидаемо первым будет назначен IP `203.0.113.10`.
 
-Удалить `Service` и убедиться, что объект не зависает:
+Если контроллер запущен локально через `make run`, посмотреть generated config можно так:
+
+```sh
+cat /tmp/k8s-lb-controller-haproxy.cfg
+```
+
+Если контроллер запущен как default distroless Deployment в kind, удобнее смотреть controller logs:
+
+```sh
+kubectl logs -n k8s-lb-controller-system deployment/k8s-lb-controller-controller-manager -c manager -f
+```
+
+При scale workload provider state должен обновляться после изменения `EndpointSlice`:
+
+```sh
+kubectl scale deployment demo -n demo --replicas=2
+kubectl get endpointslice -n demo -l kubernetes.io/service-name=demo -o wide
+```
+
+Удалить `Service` и убедиться, что cleanup выполнен:
 
 ```sh
 kubectl delete svc demo -n demo
 kubectl get svc demo -n demo
+kubectl logs -n k8s-lb-controller-system deployment/k8s-lb-controller-controller-manager -c manager --tail=100
 ```
-
-Контроллер перед удалением выполнит cleanup mock provider state и затем снимет finalizer.
 
 ## Локальная проверка
 
@@ -223,8 +323,16 @@ make deploy IMG=<registry>/k8s-lb-controller:<tag>
 make undeploy
 ```
 
-## Примечания
+## Что сознательно ещё не реализовано
 
-- scaffold Kubebuilder сохранён
-- `K8S_LB_CONTROLLER_IP_POOL` должен содержать уникальные IPv4-адреса через запятую
-- mock provider не является source of truth для IP allocation
+- advanced HAProxy HTTP routing features
+- TLS termination
+- advanced health checks
+- UDP support
+- multiple providers
+- CRD для IP pool
+- persistent provider state вне процесса
+- Helm chart
+- Prometheus / ServiceMonitor expansion
+- external API-based HAProxy management
+- отдельные контроллеры под split reconciliation

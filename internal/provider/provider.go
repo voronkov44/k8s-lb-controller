@@ -29,6 +29,13 @@ type ServicePort struct {
 	Protocol   string
 	Port       int32
 	TargetPort string
+	Backends   []BackendEndpoint
+}
+
+// BackendEndpoint describes a discovered backend endpoint for one Service port.
+type BackendEndpoint struct {
+	Address string
+	Port    int32
 }
 
 // Service contains the desired provider state for one managed Service.
@@ -51,6 +58,16 @@ func (s Service) Ref() ServiceRef {
 // DeepCopy returns a detached copy of the Service model.
 func (s Service) DeepCopy() Service {
 	copied := s
-	copied.Ports = slices.Clone(s.Ports)
+	copied.Ports = make([]ServicePort, 0, len(s.Ports))
+	for _, port := range s.Ports {
+		copied.Ports = append(copied.Ports, port.DeepCopy())
+	}
+	return copied
+}
+
+// DeepCopy returns a detached copy of the Service port model.
+func (p ServicePort) DeepCopy() ServicePort {
+	copied := p
+	copied.Backends = slices.Clone(p.Backends)
 	return copied
 }

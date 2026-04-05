@@ -75,6 +75,12 @@ spec:
           value: "30s"
         - name: K8S_LB_CONTROLLER_LOG_LEVEL
           value: "info"
+        - name: K8S_LB_CONTROLLER_HAPROXY_CONFIG_PATH
+          value: "/tmp/k8s-lb-controller-haproxy.cfg"
+        - name: K8S_LB_CONTROLLER_HAPROXY_VALIDATE_COMMAND
+          value: ""
+        - name: K8S_LB_CONTROLLER_HAPROXY_RELOAD_COMMAND
+          value: ""
         image: controller:latest
         name: manager
         ports:
@@ -111,7 +117,11 @@ spec:
           requests:
             cpu: 10m
             memory: 64Mi
-        volumeMounts: []
-      volumes: []
+        volumeMounts:
+        - mountPath: /tmp
+          name: tmp
+      volumes:
+      - emptyDir: {}
+        name: tmp
       serviceAccountName: controller-manager
       terminationGracePeriodSeconds: 10

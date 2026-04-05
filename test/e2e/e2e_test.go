@@ -176,8 +176,29 @@ var _ = Describe("Manager", Ordered, func() {
 			}, 2*time.Minute, time.Second).Should(Succeed())
 		})
 
-		It("should assign an external IP only to matching LoadBalancer Services", func() {
+		It("should assign an external IP and sync provider state for matching LoadBalancer Services", func() {
 			const manifest = `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo
+  namespace: k8s-lb-controller-e2e
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo
+  template:
+    metadata:
+      labels:
+        app: demo
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:stable
+          ports:
+            - containerPort: 80
+---
 apiVersion: v1
 kind: Service
 metadata:
@@ -215,6 +236,14 @@ spec:
 			cmd := exec.Command("kubectl", "apply", "-f", path)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to apply Service manifest")
+
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "deployment", "demo", "-n", serviceNamespace,
+					"-o", "jsonpath={.status.readyReplicas}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("1"))
+			}, 2*time.Minute, time.Second).Should(Succeed())
 
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "service", "demo-matching", "-n", serviceNamespace,
@@ -257,7 +286,8 @@ spec:
 				g.Expect(logs).To(ContainSubstring("assigned external IP"))
 				g.Expect(logs).To(ContainSubstring(defaultExternalIP))
 				g.Expect(logs).To(ContainSubstring("added service finalizer"))
-				g.Expect(logs).To(ContainSubstring("ensured mock provider state"))
+				g.Expect(logs).To(ContainSubstring("ensured provider state"))
+				g.Expect(logs).To(ContainSubstring("\"backendCount\":1"))
 			}, 2*time.Minute, time.Second).Should(Succeed())
 
 			Consistently(func(g Gomega) {
@@ -266,6 +296,25 @@ spec:
 				g.Expect(strings.Contains(logs, "demo-ignored") &&
 					strings.Contains(logs, "service matched controller selection")).To(BeFalse())
 			}, 15*time.Second, time.Second).Should(Succeed())
+
+			By("scaling the demo deployment to trigger EndpointSlice reconciliation")
+			cmd = exec.Command("kubectl", "scale", "deployment", "demo", "-n", serviceNamespace, "--replicas=2")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to scale demo Deployment")
+
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "deployment", "demo", "-n", serviceNamespace,
+					"-o", "jsonpath={.status.readyReplicas}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("2"))
+			}, 2*time.Minute, time.Second).Should(Succeed())
+
+			Eventually(func(g Gomega) {
+				logs, err := controllerLogs(controllerPodName)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(logs).To(ContainSubstring("\"backendCount\":2"))
+			}, 2*time.Minute, time.Second).Should(Succeed())
 
 			By("deleting the managed Service")
 			cmd = exec.Command("kubectl", "delete", "service", "demo-matching", "-n", serviceNamespace, "--wait=false")
@@ -276,6 +325,12 @@ spec:
 				cmd := exec.Command("kubectl", "get", "service", "demo-matching", "-n", serviceNamespace)
 				_, err := utils.Run(cmd)
 				g.Expect(err).To(HaveOccurred())
+			}, 2*time.Minute, time.Second).Should(Succeed())
+
+			Eventually(func(g Gomega) {
+				logs, err := controllerLogs(controllerPodName)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(logs).To(ContainSubstring("cleaned up provider state"))
 			}, 2*time.Minute, time.Second).Should(Succeed())
 		})
 	})

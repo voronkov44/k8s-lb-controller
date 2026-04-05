@@ -14,7 +14,15 @@ func TestMockProviderEnsureCreatesState(t *testing.T) {
 		LoadBalancerClass: "iedge.local/service-lb",
 		ExternalIP:        "203.0.113.10",
 		Ports: []ServicePort{
-			{Name: "http", Protocol: "TCP", Port: 80, TargetPort: "80"},
+			{
+				Name:       "http",
+				Protocol:   "TCP",
+				Port:       80,
+				TargetPort: "80",
+				Backends: []BackendEndpoint{
+					{Address: "10.0.0.10", Port: 8080},
+				},
+			},
 		},
 	}
 
@@ -29,6 +37,10 @@ func TestMockProviderEnsureCreatesState(t *testing.T) {
 
 	if stored.ExternalIP != "203.0.113.10" {
 		t.Fatalf("stored ExternalIP = %q, want %q", stored.ExternalIP, "203.0.113.10")
+	}
+
+	if len(stored.Ports) != 1 || len(stored.Ports[0].Backends) != 1 {
+		t.Fatalf("stored Ports = %+v, want one backend", stored.Ports)
 	}
 }
 

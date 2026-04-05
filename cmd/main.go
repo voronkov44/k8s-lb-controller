@@ -35,7 +35,7 @@ import (
 
 	"github.com/f1lzz/k8s-lb-controller/internal/config"
 	"github.com/f1lzz/k8s-lb-controller/internal/controller"
-	"github.com/f1lzz/k8s-lb-controller/internal/provider"
+	haproxyprovider "github.com/f1lzz/k8s-lb-controller/internal/provider/haproxy"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -88,7 +88,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	serviceProvider := provider.NewMockProvider()
+	serviceProvider, err := haproxyprovider.NewProvider(haproxyprovider.Config{
+		ConfigPath:      cfg.HAProxyConfigPath,
+		ValidateCommand: cfg.HAProxyValidateCommand,
+		ReloadCommand:   cfg.HAProxyReloadCommand,
+	})
+	if err != nil {
+		setupLog.Error(err, "unable to create HAProxy provider")
+		os.Exit(1)
+	}
 
 	if err := controller.SetupControllers(mgr, cfg, serviceProvider); err != nil {
 		setupLog.Error(err, "unable to set up controllers")
@@ -112,6 +120,9 @@ func main() {
 		"loadBalancerClass", cfg.LoadBalancerClass,
 		"requeueAfter", cfg.RequeueAfter.String(),
 		"logLevel", cfg.LogLevel,
+		"haproxyConfigPath", cfg.HAProxyConfigPath,
+		"haproxyValidateEnabled", cfg.HAProxyValidateCommand != "",
+		"haproxyReloadEnabled", cfg.HAProxyReloadCommand != "",
 	)
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "problem running manager")

@@ -30,6 +30,12 @@ const (
 	EnvRequeueAfter = "K8S_LB_CONTROLLER_REQUEUE_AFTER"
 	// EnvLogLevel configures the controller log level.
 	EnvLogLevel = "K8S_LB_CONTROLLER_LOG_LEVEL"
+	// EnvHAProxyConfigPath configures where the rendered HAProxy config is written.
+	EnvHAProxyConfigPath = "K8S_LB_CONTROLLER_HAPROXY_CONFIG_PATH"
+	// EnvHAProxyValidateCommand configures an optional command used to validate a candidate HAProxy config.
+	EnvHAProxyValidateCommand = "K8S_LB_CONTROLLER_HAPROXY_VALIDATE_COMMAND"
+	// EnvHAProxyReloadCommand configures an optional command used to reload HAProxy after updating the config.
+	EnvHAProxyReloadCommand = "K8S_LB_CONTROLLER_HAPROXY_RELOAD_COMMAND"
 )
 
 const (
@@ -47,6 +53,12 @@ const (
 	DefaultRequeueAfter = 30 * time.Second
 	// DefaultLogLevel is the default structured log level.
 	DefaultLogLevel = LogLevelInfo
+	// DefaultHAProxyConfigPath is the default path for the rendered HAProxy config file.
+	DefaultHAProxyConfigPath = "/tmp/k8s-lb-controller-haproxy.cfg"
+	// DefaultHAProxyValidateCommand disables config validation by default.
+	DefaultHAProxyValidateCommand = ""
+	// DefaultHAProxyReloadCommand disables reload execution by default.
+	DefaultHAProxyReloadCommand = ""
 )
 
 const (
@@ -69,13 +81,16 @@ var supportedLogLevels = map[string]struct{}{
 
 // Config contains runtime configuration loaded from environment variables.
 type Config struct {
-	MetricsAddr       string
-	HealthAddr        string
-	LeaderElect       bool
-	LoadBalancerClass string
-	IPPool            []netip.Addr
-	RequeueAfter      time.Duration
-	LogLevel          string
+	MetricsAddr            string
+	HealthAddr             string
+	LeaderElect            bool
+	LoadBalancerClass      string
+	IPPool                 []netip.Addr
+	RequeueAfter           time.Duration
+	LogLevel               string
+	HAProxyConfigPath      string
+	HAProxyValidateCommand string
+	HAProxyReloadCommand   string
 }
 
 // LoadDotEnv loads variables from .env without overriding the existing environment.
@@ -105,10 +120,13 @@ func LoadDotEnv() (bool, error) {
 // Load reads controller configuration from environment variables.
 func Load() (Config, error) {
 	cfg := Config{
-		MetricsAddr:       stringEnv(EnvMetricsAddr, DefaultMetricsAddr),
-		HealthAddr:        stringEnv(EnvHealthAddr, DefaultHealthAddr),
-		LoadBalancerClass: stringEnv(EnvLoadBalancerClass, DefaultLoadBalancerClass),
-		LogLevel:          normalizeLogLevel(stringEnv(EnvLogLevel, DefaultLogLevel)),
+		MetricsAddr:            stringEnv(EnvMetricsAddr, DefaultMetricsAddr),
+		HealthAddr:             stringEnv(EnvHealthAddr, DefaultHealthAddr),
+		LoadBalancerClass:      stringEnv(EnvLoadBalancerClass, DefaultLoadBalancerClass),
+		LogLevel:               normalizeLogLevel(stringEnv(EnvLogLevel, DefaultLogLevel)),
+		HAProxyConfigPath:      stringEnv(EnvHAProxyConfigPath, DefaultHAProxyConfigPath),
+		HAProxyValidateCommand: stringEnv(EnvHAProxyValidateCommand, DefaultHAProxyValidateCommand),
+		HAProxyReloadCommand:   stringEnv(EnvHAProxyReloadCommand, DefaultHAProxyReloadCommand),
 	}
 
 	leaderElect, err := boolEnv(EnvLeaderElect, DefaultLeaderElect)
@@ -128,6 +146,10 @@ func Load() (Config, error) {
 
 	if cfg.LoadBalancerClass == "" {
 		return Config{}, fmt.Errorf("%s must not be empty", EnvLoadBalancerClass)
+	}
+
+	if cfg.HAProxyConfigPath == "" {
+		return Config{}, fmt.Errorf("%s must not be empty", EnvHAProxyConfigPath)
 	}
 
 	ipPool, err := ipam.ParsePool(stringEnv(EnvIPPool, DefaultIPPool))
