@@ -126,6 +126,42 @@ func TestServiceReconcilerReconcileEnsuresManagedService(t *testing.T) {
 	}
 }
 
+func TestServiceReconcilerReconcileReusesAssignedIPFromStatus(t *testing.T) {
+	class := managedServiceClass
+	service := newReconcileServiceWithStatus("demo", &class, "203.0.113.11")
+	otherService := newReconcileServiceWithStatus("taken", &class, "203.0.113.10")
+	reconciler, countingClient, fakeProvider := newTestServiceReconciler(t, nil, service, otherService)
+
+	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "default", Name: "demo"},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+
+	if result != (ctrl.Result{RequeueAfter: 30 * time.Second}) {
+		t.Fatalf("Reconcile() result = %+v, want requeue result", result)
+	}
+
+	stored := getStoredService(t, countingClient, types.NamespacedName{Namespace: "default", Name: "demo"})
+	if len(stored.Status.LoadBalancer.Ingress) != 1 || stored.Status.LoadBalancer.Ingress[0].IP != "203.0.113.11" {
+		t.Fatalf("service status ingress = %+v, want IP 203.0.113.11", stored.Status.LoadBalancer.Ingress)
+	}
+
+	if countingClient.statusUpdates != 0 {
+		t.Fatalf("status update count = %d, want 0", countingClient.statusUpdates)
+	}
+
+	storedProviderService, ok := fakeProvider.Get(provider.ServiceRef{Namespace: "default", Name: "demo"})
+	if !ok {
+		t.Fatal("provider state missing for default/demo")
+	}
+
+	if storedProviderService.ExternalIP != "203.0.113.11" {
+		t.Fatalf("provider ExternalIP = %q, want %q", storedProviderService.ExternalIP, "203.0.113.11")
+	}
+}
+
 func TestServiceReconcilerReconcileDoesNotRewriteStatusOnSecondPass(t *testing.T) {
 	class := managedServiceClass
 	service := newReconcileService("demo", "default", corev1.ServiceTypeLoadBalancer, &class)
@@ -291,8 +327,8 @@ func TestServiceReconcilerReconcileDoesNotRewriteStatusWhenSameIPHasIPMode(t *te
 func TestServiceReconcilerReconcileHandlesExhaustedPoolGracefully(t *testing.T) {
 	class := managedServiceClass
 	service := newReconcileService("demo", "default", corev1.ServiceTypeLoadBalancer, &class)
-	occupiedA := newReconcileServiceWithStatus("svc-1", "default", corev1.ServiceTypeLoadBalancer, &class, "203.0.113.10")
-	occupiedB := newReconcileServiceWithStatus("svc-2", "default", corev1.ServiceTypeLoadBalancer, &class, "203.0.113.11")
+	occupiedA := newReconcileServiceWithStatus("svc-1", &class, "203.0.113.10")
+	occupiedB := newReconcileServiceWithStatus("svc-2", &class, "203.0.113.11")
 	reconciler, countingClient, fakeProvider := newTestServiceReconciler(t, nil, service, occupiedA, occupiedB)
 
 	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
@@ -516,8 +552,12 @@ func newReconcileService(name, namespace string, serviceType corev1.ServiceType,
 	}
 }
 
-func newReconcileServiceWithStatus(name, namespace string, serviceType corev1.ServiceType, loadBalancerClass *string, ingressIP string) *corev1.Service {
-	service := newReconcileService(name, namespace, serviceType, loadBalancerClass)
+func newReconcileServiceWithStatus(
+	name string,
+	loadBalancerClass *string,
+	ingressIP string,
+) *corev1.Service {
+	service := newReconcileService(name, "default", corev1.ServiceTypeLoadBalancer, loadBalancerClass)
 	service.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{IP: ingressIP}}
 	return service
 }

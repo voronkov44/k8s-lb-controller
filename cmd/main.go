@@ -35,6 +35,7 @@ import (
 
 	"github.com/f1lzz/k8s-lb-controller/internal/config"
 	"github.com/f1lzz/k8s-lb-controller/internal/controller"
+	controllermetrics "github.com/f1lzz/k8s-lb-controller/internal/metrics"
 	haproxyprovider "github.com/f1lzz/k8s-lb-controller/internal/provider/haproxy"
 	// +kubebuilder:scaffold:imports
 )
@@ -97,8 +98,9 @@ func main() {
 		setupLog.Error(err, "unable to create HAProxy provider")
 		os.Exit(1)
 	}
+	instrumentedProvider := controllermetrics.WrapProvider(serviceProvider)
 
-	if err := controller.SetupControllers(mgr, cfg, serviceProvider); err != nil {
+	if err := controller.SetupControllers(mgr, cfg, instrumentedProvider); err != nil {
 		setupLog.Error(err, "unable to set up controllers")
 		os.Exit(1)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
@@ -20,6 +21,7 @@ import (
 	"github.com/f1lzz/k8s-lb-controller/internal/backends"
 	"github.com/f1lzz/k8s-lb-controller/internal/config"
 	"github.com/f1lzz/k8s-lb-controller/internal/ipam"
+	controllermetrics "github.com/f1lzz/k8s-lb-controller/internal/metrics"
 	"github.com/f1lzz/k8s-lb-controller/internal/provider"
 	servicestatus "github.com/f1lzz/k8s-lb-controller/internal/status"
 )
@@ -39,7 +41,13 @@ type ServiceReconciler struct {
 // +kubebuilder:rbac:groups=discovery.k8s.io,resources=endpointslices,verbs=get;list;watch
 
 // Reconcile assigns an external IP from the configured pool, syncs provider state, and handles deletion.
-func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, retErr error) {
+	controllermetrics.IncServiceReconcile()
+	startedAt := time.Now()
+	defer func() {
+		controllermetrics.ObserveServiceReconcile(time.Since(startedAt), retErr)
+	}()
+
 	log := ctrl.LoggerFrom(ctx).WithValues("service", req.String())
 
 	service := &corev1.Service{}
@@ -52,7 +60,11 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	if service.DeletionTimestamp != nil {
-		return r.reconcileDeletingService(ctx, log, service)
+		if err := r.reconcileDeletingService(ctx, log, service); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		return ctrl.Result{}, nil
 	}
 
 	loadBalancerClass := serviceLoadBalancerClass(service)
@@ -93,16 +105,20 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	allocation, err := allocator.Allocate(service, services)
 	if err != nil {
 		if errors.Is(err, ipam.ErrNoFreeIP) {
+			controllermetrics.RecordIPAllocationExhausted()
 			log.Error(err, "no free IPs in pool", "poolSize", len(r.Config.IPPool))
 			return ctrl.Result{RequeueAfter: r.Config.RequeueAfter}, nil
 		}
 
+		controllermetrics.RecordIPAllocationError()
 		return ctrl.Result{}, fmt.Errorf("allocate external IP for service %s: %w", req.String(), err)
 	}
 
 	if allocation.Reused {
+		controllermetrics.RecordIPAllocationReused()
 		log.Info("reused existing external IP", "externalIP", allocation.IP.String())
 	} else {
+		controllermetrics.RecordIPAllocationAllocated()
 		log.Info("assigned external IP", "externalIP", allocation.IP.String())
 	}
 
@@ -183,11 +199,11 @@ func (r *ServiceReconciler) reconcileDeletingService(
 	ctx context.Context,
 	log logr.Logger,
 	service *corev1.Service,
-) (ctrl.Result, error) {
+) error {
 	log.Info("service is being deleted")
 
 	if !hasServiceFinalizer(service) {
-		return ctrl.Result{}, nil
+		return nil
 	}
 
 	serviceRef := provider.ServiceRef{
@@ -197,17 +213,17 @@ func (r *ServiceReconciler) reconcileDeletingService(
 
 	log.Info("cleaning up provider state")
 	if err := r.Provider.Delete(ctx, serviceRef); err != nil {
-		return ctrl.Result{}, fmt.Errorf("delete provider state for service %s: %w", serviceRef.String(), err)
+		return fmt.Errorf("delete provider state for service %s: %w", serviceRef.String(), err)
 	}
 	log.Info("cleaned up provider state")
 
 	if err := r.removeServiceFinalizer(ctx, service); err != nil {
-		return ctrl.Result{}, fmt.Errorf("remove finalizer for service %s: %w", serviceRef.String(), err)
+		return fmt.Errorf("remove finalizer for service %s: %w", serviceRef.String(), err)
 	}
 
 	log.Info("removed service finalizer", "finalizer", serviceFinalizer)
 
-	return ctrl.Result{}, nil
+	return nil
 }
 
 func (r *ServiceReconciler) ensureServiceFinalizer(ctx context.Context, service *corev1.Service) (bool, error) {

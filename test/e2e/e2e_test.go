@@ -173,6 +173,12 @@ var _ = Describe("Manager", Ordered, func() {
 				output, err := metricsOutput()
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("go_gc_duration_seconds"))
+				g.Expect(output).To(ContainSubstring("k8s_lb_controller_service_reconcile_total"))
+				g.Expect(output).To(ContainSubstring("k8s_lb_controller_service_reconcile_errors_total"))
+				g.Expect(output).To(ContainSubstring("k8s_lb_controller_service_reconcile_duration_seconds"))
+				g.Expect(output).To(ContainSubstring("k8s_lb_controller_ip_allocations_total"))
+				g.Expect(output).To(ContainSubstring("k8s_lb_controller_provider_operations_total"))
+				g.Expect(output).To(ContainSubstring("k8s_lb_controller_provider_managed_services"))
 			}, 2*time.Minute, time.Second).Should(Succeed())
 		})
 
@@ -261,6 +267,15 @@ spec:
 				g.Expect(output).To(ContainSubstring(serviceFinalizer))
 			}, 2*time.Minute, time.Second).Should(Succeed())
 
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "endpointslice", "-n", serviceNamespace,
+					"-l", "kubernetes.io/service-name=demo-matching",
+					"-o", "jsonpath={.items[*].metadata.name}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(strings.TrimSpace(output)).NotTo(BeEmpty())
+			}, 2*time.Minute, time.Second).Should(Succeed())
+
 			Consistently(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "service", "demo-ignored", "-n", serviceNamespace,
 					"-o", "jsonpath={.metadata.finalizers}")
@@ -321,11 +336,11 @@ spec:
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to delete demo-matching Service")
 
-			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "service", "demo-matching", "-n", serviceNamespace)
-				_, err := utils.Run(cmd)
-				g.Expect(err).To(HaveOccurred())
-			}, 2*time.Minute, time.Second).Should(Succeed())
+			By("waiting for the Service to disappear instead of hanging in Terminating")
+			cmd = exec.Command("kubectl", "wait", "--for=delete", "service/demo-matching",
+				"-n", serviceNamespace, "--timeout=120s")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Managed Service should be deleted cleanly")
 
 			Eventually(func(g Gomega) {
 				logs, err := controllerLogs(controllerPodName)

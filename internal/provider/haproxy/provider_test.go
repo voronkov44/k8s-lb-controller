@@ -180,6 +180,45 @@ func TestProviderDeleteMissingEntryStillKeepsValidConfig(t *testing.T) {
 	}
 }
 
+func TestProviderEnsureUpdatesConfigWhenBackendCountChanges(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "haproxy.cfg")
+	haproxyProvider, err := NewProvider(Config{ConfigPath: configPath})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+
+	service := newTestService("default", "demo", "203.0.113.10", []provider.ServicePort{
+		{
+			Name:     "http",
+			Protocol: "TCP",
+			Port:     80,
+			Backends: []provider.BackendEndpoint{{Address: "10.0.0.10", Port: 8080}},
+		},
+	})
+	if err := haproxyProvider.Ensure(context.Background(), service); err != nil {
+		t.Fatalf("Ensure() error = %v", err)
+	}
+
+	before := readConfigFile(t, configPath)
+
+	service.Ports[0].Backends = []provider.BackendEndpoint{
+		{Address: "10.0.0.10", Port: 8080},
+		{Address: "10.0.0.11", Port: 8080},
+	}
+	if err := haproxyProvider.Ensure(context.Background(), service); err != nil {
+		t.Fatalf("Ensure() second error = %v", err)
+	}
+
+	after := readConfigFile(t, configPath)
+	if before == after {
+		t.Fatal("config did not change after backend count update")
+	}
+
+	if !strings.Contains(after, "server srv_0002_10_0_0_11_8080 10.0.0.11:8080") {
+		t.Fatalf("config missing second backend after update:\n%s", after)
+	}
+}
+
 func TestProviderEnsureValidateFailureReturnsErrorAndDoesNotApplyState(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "haproxy.cfg")
 	haproxyProvider, err := NewProvider(Config{
@@ -217,6 +256,37 @@ func TestProviderEnsureValidateFailureReturnsErrorAndDoesNotApplyState(t *testin
 
 	if got := readConfigFile(t, configPath); got != existingRendered {
 		t.Fatalf("config changed after validation failure =\n%s\nwant:\n%s", got, existingRendered)
+	}
+}
+
+func TestProviderEnsureValidateFailureCleansUpCandidateFiles(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "haproxy.cfg")
+	haproxyProvider, err := NewProvider(Config{
+		ConfigPath:      configPath,
+		ValidateCommand: "false",
+	})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+
+	service := newTestService("default", "demo", "203.0.113.10", []provider.ServicePort{
+		{Name: "http", Protocol: "TCP", Port: 80, Backends: []provider.BackendEndpoint{{Address: "10.0.0.10", Port: 8080}}},
+	})
+
+	if err := haproxyProvider.Ensure(context.Background(), service); err == nil {
+		t.Fatal("Ensure() error = nil, want non-nil")
+	}
+
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		t.Fatalf("ReadDir() error = %v", err)
+	}
+
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), ".tmp-") {
+			t.Fatalf("temporary file %q still exists after validation failure", entry.Name())
+		}
 	}
 }
 

@@ -184,6 +184,86 @@ func TestDiscoverMatchesPortsByNameAndTargetPort(t *testing.T) {
 	}
 }
 
+func TestDiscoverIgnoresOtherNamespacesAndDeduplicatesBackends(t *testing.T) {
+	service := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "default",
+		},
+		Spec: corev1.ServiceSpec{
+			Ports: []corev1.ServicePort{
+				{
+					Name:       "http",
+					Protocol:   corev1.ProtocolTCP,
+					Port:       80,
+					TargetPort: intstr.FromInt32(8080),
+				},
+			},
+		},
+	}
+
+	httpName := "http"
+
+	discovered := Discover(service, []discoveryv1.EndpointSlice{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "demo-default",
+				Namespace: "default",
+				Labels: map[string]string{
+					discoveryv1.LabelServiceName: service.Name,
+				},
+			},
+			Ports: []discoveryv1.EndpointPort{
+				{Name: &httpName, Port: ptr.To[int32](8080), Protocol: ptr.To(corev1.ProtocolTCP)},
+			},
+			Endpoints: []discoveryv1.Endpoint{
+				{Addresses: []string{"10.0.0.2"}},
+				{Addresses: []string{"10.0.0.2"}},
+				{Addresses: []string{"10.0.0.1"}},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "demo-other-namespace",
+				Namespace: "other",
+				Labels: map[string]string{
+					discoveryv1.LabelServiceName: service.Name,
+				},
+			},
+			Ports: []discoveryv1.EndpointPort{
+				{Name: &httpName, Port: ptr.To[int32](8080), Protocol: ptr.To(corev1.ProtocolTCP)},
+			},
+			Endpoints: []discoveryv1.Endpoint{
+				{Addresses: []string{"10.0.0.9"}},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "demo-empty",
+				Namespace: "default",
+				Labels: map[string]string{
+					discoveryv1.LabelServiceName: service.Name,
+				},
+			},
+			Ports: []discoveryv1.EndpointPort{
+				{Name: &httpName, Port: ptr.To[int32](8080), Protocol: ptr.To(corev1.ProtocolTCP)},
+			},
+		},
+	})
+
+	if len(discovered) != 1 {
+		t.Fatalf("Discover() len = %d, want 1", len(discovered))
+	}
+
+	wantBackends := []provider.BackendEndpoint{
+		{Address: "10.0.0.1", Port: 8080},
+		{Address: "10.0.0.2", Port: 8080},
+	}
+	if !slices.Equal(discovered[0].Backends, wantBackends) {
+		t.Fatalf("Discover() backends = %+v, want %+v", discovered[0].Backends, wantBackends)
+	}
+}
+
 func TestDiscoverReturnsEmptyBackendsWhenNoMatchingEndpointSlicesExist(t *testing.T) {
 	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
