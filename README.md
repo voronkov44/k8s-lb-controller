@@ -1,29 +1,41 @@
 # k8s-lb-controller
 
 `k8s-lb-controller` is a Kubernetes controller built with Kubebuilder and `controller-runtime`.
-Проект предназначен для последующей интеграции `Service` типа `LoadBalancer` с внешним балансировщиком.
+Проект предназначен для интеграции `Service` типа `LoadBalancer` с внешним балансировщиком, но сейчас реализован только baseline без provider и без CRD.
 
 ## Текущий статус
 
-Сейчас реализована только Phase 1 MVP:
+Сейчас реализована Phase 2 MVP:
 
 - используется built-in ресурс `core/v1 Service`
-- CRD пока не используются
-- контроллер отслеживает `Service`
+- CRD не используются
+- контроллер отслеживает только `Service`
 - в обработку попадают только сервисы:
   - `spec.type == LoadBalancer`
   - `spec.loadBalancerClass != nil`
   - `spec.loadBalancerClass == K8S_LB_CONTROLLER_LOAD_BALANCER_CLASS`
-- подходящие сервисы только логируются и ставятся на повторную обработку через `RequeueAfter`
-- IPAM, provider, HAProxy, EndpointSlice logic, finalizer и status updates пока не реализованы
+- matching `Service` получает внешний IP из настроенного статического пула
+- IP записывается в `.status.loadBalancer.ingress`
+- при повторных reconcile статус не переписывается без необходимости
+- allocator опирается только на текущее состояние живых managed `Service`
 
-## Структура Phase 1
+Пока сознательно не реализованы:
+
+- provider
+- HAProxy integration
+- EndpointSlice logic
+- finalizer и cleanup
+- persistent state для аллокаций
+- CRD и Helm chart
+
+## Структура
 
 - `cmd/main.go` — entrypoint, manager setup, logger, healthz/readyz
-- `internal/config/config.go` — загрузка env-конфига
-- `internal/controller/service_controller.go` — `ServiceReconciler`
-- `internal/controller/service_filter.go` — фильтрация `Service`
-- `internal/controller/setup.go` — регистрация контроллеров
+- `internal/config/config.go` — env-конфиг и валидация
+- `internal/controller/service_controller.go` — reconcile для `Service`
+- `internal/controller/service_filter.go` — фильтрация managed `Service`
+- `internal/ipam` — статический IPAM поверх configured pool
+- `internal/status` — helper для `Service.status.loadBalancer.ingress`
 
 ## Требования
 
@@ -33,8 +45,6 @@
 - kind или k3d для локальной проверки в кластере
 
 ## Переменные окружения
-
-См. [`.env.example`](/Users/f1lzz/GolandProjects/k8s-controller/k8s-lb-controller/.env.example).
 
 Приложение автоматически пытается загрузить `.env` при старте.
 Если файла нет, используются обычные переменные окружения и default values.
@@ -48,10 +58,23 @@
 | `K8S_LB_CONTROLLER_HEALTH_ADDR` | `:8081` |
 | `K8S_LB_CONTROLLER_LEADER_ELECT` | `false` |
 | `K8S_LB_CONTROLLER_LOAD_BALANCER_CLASS` | `iedge.local/service-lb` |
+| `K8S_LB_CONTROLLER_IP_POOL` | `203.0.113.10,203.0.113.11,203.0.113.12` |
 | `K8S_LB_CONTROLLER_REQUEUE_AFTER` | `30s` |
 | `K8S_LB_CONTROLLER_LOG_LEVEL` | `info` |
 
 Поддерживаемые уровни логирования: `debug`, `info`, `warn`, `error`.
+
+Пример `.env`:
+
+```dotenv
+K8S_LB_CONTROLLER_METRICS_ADDR=:8080
+K8S_LB_CONTROLLER_HEALTH_ADDR=:8081
+K8S_LB_CONTROLLER_LEADER_ELECT=false
+K8S_LB_CONTROLLER_LOAD_BALANCER_CLASS=iedge.local/service-lb
+K8S_LB_CONTROLLER_IP_POOL=203.0.113.10,203.0.113.11,203.0.113.12
+K8S_LB_CONTROLLER_REQUEUE_AFTER=30s
+K8S_LB_CONTROLLER_LOG_LEVEL=info
+```
 
 ## Локальный запуск
 
@@ -66,7 +89,7 @@ make run
 make run
 ```
 
-Или переопределить конкретную переменную из shell:
+Переопределение из shell по-прежнему работает:
 
 ```sh
 K8S_LB_CONTROLLER_LOG_LEVEL=debug make run
@@ -79,10 +102,16 @@ K8S_LB_CONTROLLER_LOG_LEVEL=debug make run
 1. читает `Service` по `namespace/name`
 2. игнорирует отсутствующие объекты без ошибки
 3. игнорирует все сервисы, которые не подходят под фильтр
-4. логирует подходящий `Service`
-5. возвращает `ctrl.Result{RequeueAfter: ...}`
+4. пропускает `Service`, который уже удаляется
+5. вычисляет занятые IP по текущим managed `Service`
+6. сохраняет уже назначенный корректный IP, если он не конфликтует
+7. иначе выбирает первый свободный IP из пула
+8. обновляет `.status.loadBalancer.ingress` только при реальном изменении
+9. возвращает `ctrl.Result{RequeueAfter: ...}`
 
-## Пример Service, который попадет в обработку
+После назначения IP `kubectl get svc` начинает показывать `EXTERNAL-IP`.
+
+## Пример matching Service
 
 ```yaml
 apiVersion: v1
@@ -96,10 +125,12 @@ spec:
     app: demo
   ports:
     - port: 80
-      targetPort: 8080
+      targetPort: 80
 ```
 
-## Запуск в kind
+## Demo Flow В kind
+
+Создать кластер и задеплоить контроллер:
 
 ```sh
 kind create cluster --name k8s-lb-controller
@@ -108,47 +139,66 @@ kind load docker-image k8s-lb-controller:dev --name k8s-lb-controller
 make deploy IMG=k8s-lb-controller:dev
 ```
 
-Проверка:
+Создать namespace и demo workload:
 
 ```sh
-kubectl get pods -n k8s-lb-controller-system
+kubectl create namespace demo
+kubectl apply -n demo -f - <<'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo
+  template:
+    metadata:
+      labels:
+        app: demo
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:stable
+          ports:
+            - containerPort: 80
+EOF
+```
+
+Применить matching `Service`:
+
+```sh
+kubectl apply -n demo -f - <<'EOF'
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo
+spec:
+  type: LoadBalancer
+  loadBalancerClass: iedge.local/service-lb
+  selector:
+    app: demo
+  ports:
+    - port: 80
+      targetPort: 80
+EOF
+```
+
+Проверить, что появился `EXTERNAL-IP`:
+
+```sh
+kubectl get svc demo -n demo
+kubectl get svc demo -n demo -o jsonpath='{.status.loadBalancer.ingress[0].ip}'; echo
 kubectl logs -n k8s-lb-controller-system deployment/k8s-lb-controller-controller-manager -c manager -f
-kubectl apply -f ./service.yaml
 ```
 
-Удаление:
+Ожидаемо первым будет назначен IP `203.0.113.10`.
+
+## Локальная проверка
 
 ```sh
-make undeploy
-kind delete cluster --name k8s-lb-controller
-```
-
-## Запуск в k3d
-
-```sh
-k3d cluster create k8s-lb-controller
-make docker-build IMG=k8s-lb-controller:dev
-k3d image import k8s-lb-controller:dev -c k8s-lb-controller
-make deploy IMG=k8s-lb-controller:dev
-```
-
-Проверка:
-
-```sh
-kubectl get pods -n k8s-lb-controller-system
-kubectl logs -n k8s-lb-controller-system deployment/k8s-lb-controller-controller-manager -c manager -f
-```
-
-Удаление:
-
-```sh
-make undeploy
-k3d cluster delete k8s-lb-controller
-```
-
-## Локальная проверка lint/test
-
-```sh
+make manifests
 make lint
 make test
 ```
@@ -181,6 +231,6 @@ make undeploy
 
 ## Примечания
 
-- `make install` и `make uninstall` сейчас ничего не устанавливают, потому что в Phase 1 нет CRD
-- scaffold Kubebuilder сохранен; проект не пересоздавался
-- Helm предполагается как следующий шаг, но в Phase 1 deployment остается на Kustomize-манифестах Kubebuilder
+- `make install` и `make uninstall` сейчас ничего не делают, потому что в проекте нет CRD
+- scaffold Kubebuilder сохранён
+- `K8S_LB_CONTROLLER_IP_POOL` должен содержать уникальные IPv4-адреса через запятую

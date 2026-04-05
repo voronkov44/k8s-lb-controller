@@ -69,6 +69,8 @@ spec:
           value: "true"
         - name: K8S_LB_CONTROLLER_LOAD_BALANCER_CLASS
           value: "iedge.local/service-lb"
+        - name: K8S_LB_CONTROLLER_IP_POOL
+          value: "203.0.113.10,203.0.113.11,203.0.113.12"
         - name: K8S_LB_CONTROLLER_REQUEUE_AFTER
           value: "30s"
         - name: K8S_LB_CONTROLLER_LOG_LEVEL

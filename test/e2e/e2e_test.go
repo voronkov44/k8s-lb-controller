@@ -37,6 +37,7 @@ const (
 	namespace        = "k8s-lb-controller-system"
 	serviceNamespace = "k8s-lb-controller-e2e"
 	metricsService   = "k8s-lb-controller-controller-manager-metrics-service"
+	defaultExternalIP = "203.0.113.10"
 )
 
 var _ = Describe("Manager", Ordered, func() {
@@ -174,7 +175,7 @@ var _ = Describe("Manager", Ordered, func() {
 			}, 2*time.Minute, time.Second).Should(Succeed())
 		})
 
-		It("should reconcile only matching LoadBalancer Services", func() {
+		It("should assign an external IP only to matching LoadBalancer Services", func() {
 			const manifest = `
 apiVersion: v1
 kind: Service
@@ -188,7 +189,7 @@ spec:
     app: demo
   ports:
     - port: 80
-      targetPort: 8080
+      targetPort: 80
 ---
 apiVersion: v1
 kind: Service
@@ -202,7 +203,7 @@ spec:
     app: demo
   ports:
     - port: 81
-      targetPort: 8081
+      targetPort: 80
 `
 
 			By("applying Service manifests")
@@ -215,11 +216,29 @@ spec:
 			Expect(err).NotTo(HaveOccurred(), "Failed to apply Service manifest")
 
 			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "service", "demo-matching", "-n", serviceNamespace,
+					"-o", "jsonpath={.status.loadBalancer.ingress[0].ip}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal(defaultExternalIP))
+			}, 2*time.Minute, time.Second).Should(Succeed())
+
+			Consistently(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "service", "demo-ignored", "-n", serviceNamespace,
+					"-o", "jsonpath={.status.loadBalancer.ingress[0].ip}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(BeEmpty())
+			}, 15*time.Second, time.Second).Should(Succeed())
+
+			Eventually(func(g Gomega) {
 				logs, err := controllerLogs(controllerPodName)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(logs).To(ContainSubstring("service matched controller selection"))
 				g.Expect(logs).To(ContainSubstring("demo-matching"))
 				g.Expect(logs).To(ContainSubstring("iedge.local/service-lb"))
+				g.Expect(logs).To(ContainSubstring("assigned external IP"))
+				g.Expect(logs).To(ContainSubstring(defaultExternalIP))
 			}, 2*time.Minute, time.Second).Should(Succeed())
 
 			Consistently(func(g Gomega) {

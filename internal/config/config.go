@@ -2,12 +2,15 @@ package config
 
 import (
 	"fmt"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
+
+	"github.com/f1lzz/k8s-lb-controller/internal/ipam"
 )
 
 const (
@@ -21,6 +24,8 @@ const (
 	EnvLeaderElect = "K8S_LB_CONTROLLER_LEADER_ELECT"
 	// EnvLoadBalancerClass configures the Service load balancer class handled by the controller.
 	EnvLoadBalancerClass = "K8S_LB_CONTROLLER_LOAD_BALANCER_CLASS"
+	// EnvIPPool configures the external IPv4 address pool used for matching Services.
+	EnvIPPool = "K8S_LB_CONTROLLER_IP_POOL"
 	// EnvRequeueAfter configures the requeue interval for matching Services.
 	EnvRequeueAfter = "K8S_LB_CONTROLLER_REQUEUE_AFTER"
 	// EnvLogLevel configures the controller log level.
@@ -36,6 +41,8 @@ const (
 	DefaultLeaderElect = false
 	// DefaultLoadBalancerClass is the default Service load balancer class processed by the controller.
 	DefaultLoadBalancerClass = "iedge.local/service-lb"
+	// DefaultIPPool is the default external IPv4 address pool used for managed Services.
+	DefaultIPPool = "203.0.113.10,203.0.113.11,203.0.113.12"
 	// DefaultRequeueAfter is the default reconciliation requeue interval for matching Services.
 	DefaultRequeueAfter = 30 * time.Second
 	// DefaultLogLevel is the default structured log level.
@@ -66,6 +73,7 @@ type Config struct {
 	HealthAddr        string
 	LeaderElect       bool
 	LoadBalancerClass string
+	IPPool            []netip.Addr
 	RequeueAfter      time.Duration
 	LogLevel          string
 }
@@ -121,6 +129,12 @@ func Load() (Config, error) {
 	if cfg.LoadBalancerClass == "" {
 		return Config{}, fmt.Errorf("%s must not be empty", EnvLoadBalancerClass)
 	}
+
+	ipPool, err := ipam.ParsePool(stringEnv(EnvIPPool, DefaultIPPool))
+	if err != nil {
+		return Config{}, fmt.Errorf("parse %s: %w", EnvIPPool, err)
+	}
+	cfg.IPPool = ipPool
 
 	if _, ok := supportedLogLevels[cfg.LogLevel]; !ok {
 		return Config{}, fmt.Errorf("%s must be one of: debug, info, warn, error", EnvLogLevel)

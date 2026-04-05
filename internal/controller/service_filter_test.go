@@ -7,8 +7,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+const managedServiceClass = "iedge.local/service-lb"
+
 func TestIsManagedLoadBalancerService(t *testing.T) {
-	class := "iedge.local/service-lb"
+	class := managedServiceClass
 	otherClass := "diploma.local/other"
 
 	tests := []struct {

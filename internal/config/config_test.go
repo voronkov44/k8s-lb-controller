@@ -1,8 +1,10 @@
 package config
 
 import (
+	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
@@ -31,6 +33,15 @@ func TestLoadDefaults(t *testing.T) {
 		t.Fatalf("LoadBalancerClass = %q, want %q", cfg.LoadBalancerClass, DefaultLoadBalancerClass)
 	}
 
+	wantPool := []netip.Addr{
+		netip.MustParseAddr("203.0.113.10"),
+		netip.MustParseAddr("203.0.113.11"),
+		netip.MustParseAddr("203.0.113.12"),
+	}
+	if !slices.Equal(cfg.IPPool, wantPool) {
+		t.Fatalf("IPPool = %v, want %v", cfg.IPPool, wantPool)
+	}
+
 	if cfg.RequeueAfter != DefaultRequeueAfter {
 		t.Fatalf("RequeueAfter = %s, want %s", cfg.RequeueAfter, DefaultRequeueAfter)
 	}
@@ -47,6 +58,7 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv(EnvHealthAddr, ":18081")
 	t.Setenv(EnvLeaderElect, "true")
 	t.Setenv(EnvLoadBalancerClass, "example.local/lb")
+	t.Setenv(EnvIPPool, "203.0.113.20, 203.0.113.21 , ,203.0.113.22")
 	t.Setenv(EnvRequeueAfter, "45s")
 	t.Setenv(EnvLogLevel, "DEBUG")
 
@@ -71,6 +83,15 @@ func TestLoadOverrides(t *testing.T) {
 		t.Fatalf("LoadBalancerClass = %q, want %q", cfg.LoadBalancerClass, "example.local/lb")
 	}
 
+	wantPool := []netip.Addr{
+		netip.MustParseAddr("203.0.113.20"),
+		netip.MustParseAddr("203.0.113.21"),
+		netip.MustParseAddr("203.0.113.22"),
+	}
+	if !slices.Equal(cfg.IPPool, wantPool) {
+		t.Fatalf("IPPool = %v, want %v", cfg.IPPool, wantPool)
+	}
+
 	if cfg.RequeueAfter != 45*time.Second {
 		t.Fatalf("RequeueAfter = %s, want %s", cfg.RequeueAfter, 45*time.Second)
 	}
@@ -84,6 +105,24 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 	setConfigEnvToEmpty(t)
 
 	t.Setenv(EnvLeaderElect, "not-a-bool")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() error = nil, want non-nil")
+	}
+}
+
+func TestLoadRejectsDuplicateIPPoolAddresses(t *testing.T) {
+	setConfigEnvToEmpty(t)
+	t.Setenv(EnvIPPool, "203.0.113.10,203.0.113.10")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() error = nil, want non-nil")
+	}
+}
+
+func TestLoadRejectsInvalidIPPoolAddresses(t *testing.T) {
+	setConfigEnvToEmpty(t)
+	t.Setenv(EnvIPPool, "203.0.113.10,not-an-ip")
 
 	if _, err := Load(); err == nil {
 		t.Fatal("Load() error = nil, want non-nil")
@@ -112,6 +151,7 @@ func TestLoadDotEnvLoadsFileWithoutOverridingEnvironment(t *testing.T) {
 
 	content := []byte("K8S_LB_CONTROLLER_METRICS_ADDR=:19090\n" +
 		"K8S_LB_CONTROLLER_LOAD_BALANCER_CLASS=from-dotenv\n" +
+		"K8S_LB_CONTROLLER_IP_POOL=203.0.113.30,203.0.113.31\n" +
 		"K8S_LB_CONTROLLER_LOG_LEVEL=warn\n")
 	if err := os.WriteFile(filepath.Join(dir, DotEnvFileName), content, 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
@@ -143,6 +183,14 @@ func TestLoadDotEnvLoadsFileWithoutOverridingEnvironment(t *testing.T) {
 		t.Fatalf("LoadBalancerClass = %q, want %q", cfg.LoadBalancerClass, "from-env")
 	}
 
+	wantPool := []netip.Addr{
+		netip.MustParseAddr("203.0.113.30"),
+		netip.MustParseAddr("203.0.113.31"),
+	}
+	if !slices.Equal(cfg.IPPool, wantPool) {
+		t.Fatalf("IPPool = %v, want %v", cfg.IPPool, wantPool)
+	}
+
 	if cfg.LogLevel != LogLevelWarn {
 		t.Fatalf("LogLevel = %q, want %q", cfg.LogLevel, LogLevelWarn)
 	}
@@ -155,6 +203,7 @@ func setConfigEnvToEmpty(t *testing.T) {
 	t.Setenv(EnvHealthAddr, "")
 	t.Setenv(EnvLeaderElect, "")
 	t.Setenv(EnvLoadBalancerClass, "")
+	t.Setenv(EnvIPPool, "")
 	t.Setenv(EnvRequeueAfter, "")
 	t.Setenv(EnvLogLevel, "")
 }
@@ -167,6 +216,7 @@ func unsetConfigEnv(t *testing.T) {
 		EnvHealthAddr,
 		EnvLeaderElect,
 		EnvLoadBalancerClass,
+		EnvIPPool,
 		EnvRequeueAfter,
 		EnvLogLevel,
 	}
