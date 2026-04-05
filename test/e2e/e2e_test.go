@@ -20,7 +20,12 @@ limitations under the License.
 package e2e
 
 import (
+	"bytes"
+	"context"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -68,12 +73,8 @@ var _ = Describe("Manager", Ordered, func() {
 	})
 
 	AfterAll(func() {
-		By("cleaning up the curl pod for metrics")
-		cmd := exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace, "--ignore-not-found")
-		_, _ = utils.Run(cmd)
-
 		By("undeploying the controller-manager")
-		cmd = exec.Command("make", "undeploy")
+		cmd := exec.Command("make", "undeploy")
 		_, _ = utils.Run(cmd)
 
 		By("removing service test namespace")
@@ -131,54 +132,20 @@ var _ = Describe("Manager", Ordered, func() {
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Metrics service should exist")
 
-			By("creating a curl pod to access the metrics endpoint")
-			cmd = exec.Command("kubectl", "run", "curl-metrics", "--restart=Never",
-				"--namespace", namespace,
-				"--image=curlimages/curl:latest",
-				"--overrides",
-				fmt.Sprintf(`{
-					"spec": {
-						"containers": [{
-							"name": "curl",
-							"image": "curlimages/curl:latest",
-							"command": ["/bin/sh", "-c"],
-							"args": ["curl -sS http://%s.%s.svc.cluster.local:8080/metrics"],
-							"securityContext": {
-								"readOnlyRootFilesystem": true,
-								"allowPrivilegeEscalation": false,
-								"capabilities": {
-									"drop": ["ALL"]
-								},
-								"runAsNonRoot": true,
-								"runAsUser": 1000,
-								"seccompProfile": {
-									"type": "RuntimeDefault"
-								}
-							}
-						}]
-					}
-				}`, metricsService, namespace))
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Failed to create curl-metrics pod")
+			By("forwarding the metrics service locally")
+			portForward, err := startMetricsPortForward()
+			Expect(err).NotTo(HaveOccurred(), "Failed to start metrics port-forward")
+			defer func() {
+				Expect(portForward.Stop()).To(Succeed())
+			}()
 
 			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "pod", "curl-metrics", "-n", namespace,
-					"-o", "jsonpath={.status.phase}")
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("Succeeded"))
-			}, 5*time.Minute, time.Second).Should(Succeed())
-
-			Eventually(func(g Gomega) {
-				output, err := metricsOutput()
+				output, err := metricsOutput(portForward.LocalPort)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("go_gc_duration_seconds"))
 				g.Expect(output).To(ContainSubstring("k8s_lb_controller_service_reconcile_total"))
 				g.Expect(output).To(ContainSubstring("k8s_lb_controller_service_reconcile_errors_total"))
 				g.Expect(output).To(ContainSubstring("k8s_lb_controller_service_reconcile_duration_seconds"))
-				g.Expect(output).To(ContainSubstring("k8s_lb_controller_ip_allocations_total"))
-				g.Expect(output).To(ContainSubstring("k8s_lb_controller_provider_operations_total"))
-				g.Expect(output).To(ContainSubstring("k8s_lb_controller_provider_managed_services"))
 			}, 2*time.Minute, time.Second).Should(Succeed())
 		})
 
@@ -305,6 +272,21 @@ spec:
 				g.Expect(logs).To(ContainSubstring("\"backendCount\":1"))
 			}, 2*time.Minute, time.Second).Should(Succeed())
 
+			By("verifying activity-dependent custom metrics after reconcile work has happened")
+			portForward, err := startMetricsPortForward()
+			Expect(err).NotTo(HaveOccurred(), "Failed to start metrics port-forward")
+			defer func() {
+				Expect(portForward.Stop()).To(Succeed())
+			}()
+
+			Eventually(func(g Gomega) {
+				output, err := metricsOutput(portForward.LocalPort)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("k8s_lb_controller_ip_allocations_total"))
+				g.Expect(output).To(ContainSubstring("k8s_lb_controller_provider_operations_total"))
+				g.Expect(output).To(ContainSubstring("k8s_lb_controller_provider_managed_services"))
+			}, 2*time.Minute, time.Second).Should(Succeed())
+
 			Consistently(func(g Gomega) {
 				logs, err := controllerLogs(controllerPodName)
 				g.Expect(err).NotTo(HaveOccurred())
@@ -376,9 +358,153 @@ func controllerLogs(podName string) (string, error) {
 	return utils.Run(cmd)
 }
 
-func metricsOutput() (string, error) {
-	cmd := exec.Command("kubectl", "logs", "curl-metrics", "-n", namespace)
-	return utils.Run(cmd)
+type portForwardSession struct {
+	LocalPort int
+
+	cancel context.CancelFunc
+	cmd    *exec.Cmd
+	stdout bytes.Buffer
+	stderr bytes.Buffer
+	done   chan error
+}
+
+func startMetricsPortForward() (*portForwardSession, error) {
+	localPort, err := freeLocalPort()
+	if err != nil {
+		return nil, fmt.Errorf("allocate local port: %w", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := exec.CommandContext(
+		ctx,
+		"kubectl",
+		"port-forward",
+		"-n", namespace,
+		"--address", "127.0.0.1",
+		"service/"+metricsService,
+		fmt.Sprintf("%d:8080", localPort),
+	)
+
+	session := &portForwardSession{
+		LocalPort: localPort,
+		cancel:    cancel,
+		cmd:       cmd,
+		done:      make(chan error, 1),
+	}
+	cmd.Stdout = &session.stdout
+	cmd.Stderr = &session.stderr
+
+	if err := cmd.Start(); err != nil {
+		cancel()
+		return nil, fmt.Errorf("start port-forward: %w", err)
+	}
+
+	go func() {
+		session.done <- cmd.Wait()
+	}()
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	metricsURL := fmt.Sprintf("http://127.0.0.1:%d/metrics", localPort)
+	deadline := time.Now().Add(30 * time.Second)
+
+	for time.Now().Before(deadline) {
+		response, requestErr := client.Get(metricsURL)
+		if requestErr == nil {
+			_ = response.Body.Close()
+			if response.StatusCode == http.StatusOK {
+				return session, nil
+			}
+		}
+
+		select {
+		case waitErr := <-session.done:
+			cancel()
+			return nil, fmt.Errorf("port-forward exited early: %w: %s", waitErr, session.output())
+		default:
+		}
+
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	_ = session.Stop()
+	return nil, fmt.Errorf("timed out waiting for metrics port-forward readiness: %s", session.output())
+}
+
+func (s *portForwardSession) Stop() error {
+	if s == nil {
+		return nil
+	}
+
+	s.cancel()
+
+	select {
+	case err := <-s.done:
+		if err == nil || strings.Contains(err.Error(), "signal: killed") {
+			return nil
+		}
+		return fmt.Errorf("wait for port-forward shutdown: %w: %s", err, s.output())
+	case <-time.After(5 * time.Second):
+		if s.cmd != nil && s.cmd.Process != nil {
+			_ = s.cmd.Process.Kill()
+		}
+
+		select {
+		case err := <-s.done:
+			if err == nil || strings.Contains(err.Error(), "signal: killed") {
+				return nil
+			}
+			return fmt.Errorf("force-stop port-forward: %w: %s", err, s.output())
+		case <-time.After(2 * time.Second):
+			return fmt.Errorf("timed out stopping metrics port-forward: %s", s.output())
+		}
+	}
+}
+
+func (s *portForwardSession) output() string {
+	if s == nil {
+		return ""
+	}
+
+	return strings.TrimSpace(s.stdout.String() + "\n" + s.stderr.String())
+}
+
+func metricsOutput(localPort int) (string, error) {
+	client := &http.Client{Timeout: 5 * time.Second}
+	response, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/metrics", localPort))
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		_ = response.Body.Close()
+	}()
+
+	if response.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("unexpected metrics status code %d", response.StatusCode)
+	}
+
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return "", err
+	}
+
+	return string(body), nil
+}
+
+func freeLocalPort() (int, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		_ = listener.Close()
+	}()
+
+	addr, ok := listener.Addr().(*net.TCPAddr)
+	if !ok {
+		return 0, fmt.Errorf("unexpected listener address type %T", listener.Addr())
+	}
+
+	return addr.Port, nil
 }
 
 func writeTempManifest(prefix, content string) (string, error) {
