@@ -1,6 +1,10 @@
 package controller
 
-import corev1 "k8s.io/api/core/v1"
+import (
+	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+)
 
 func isManagedLoadBalancerService(service *corev1.Service, expectedLoadBalancerClass string) bool {
 	if service == nil {
@@ -24,4 +28,48 @@ func serviceLoadBalancerClass(service *corev1.Service) string {
 	}
 
 	return *service.Spec.LoadBalancerClass
+}
+
+func serviceReconcilePredicate() predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc: func(_ event.CreateEvent) bool {
+			return true
+		},
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldService, oldOK := e.ObjectOld.(*corev1.Service)
+			newService, newOK := e.ObjectNew.(*corev1.Service)
+			if !oldOK || !newOK {
+				return true
+			}
+
+			if oldService.Generation != newService.Generation {
+				return true
+			}
+
+			return deletionTimestampChanged(oldService, newService)
+		},
+		DeleteFunc: func(_ event.DeleteEvent) bool {
+			return false
+		},
+		GenericFunc: func(_ event.GenericEvent) bool {
+			return false
+		},
+	}
+}
+
+func deletionTimestampChanged(oldService, newService *corev1.Service) bool {
+	switch {
+	case oldService == nil && newService == nil:
+		return false
+	case oldService == nil:
+		return newService.DeletionTimestamp != nil
+	case newService == nil:
+		return oldService.DeletionTimestamp != nil
+	case oldService.DeletionTimestamp == nil && newService.DeletionTimestamp == nil:
+		return false
+	case oldService.DeletionTimestamp == nil || newService.DeletionTimestamp == nil:
+		return true
+	default:
+		return !oldService.DeletionTimestamp.Equal(newService.DeletionTimestamp)
+	}
 }

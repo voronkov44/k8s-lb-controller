@@ -35,6 +35,7 @@ import (
 
 	"github.com/f1lzz/k8s-lb-controller/internal/config"
 	"github.com/f1lzz/k8s-lb-controller/internal/controller"
+	"github.com/f1lzz/k8s-lb-controller/internal/provider"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -87,7 +88,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := controller.SetupControllers(mgr, cfg); err != nil {
+	serviceProvider := provider.NewMockProvider()
+
+	if err := controller.SetupControllers(mgr, cfg, serviceProvider); err != nil {
 		setupLog.Error(err, "unable to set up controllers")
 		os.Exit(1)
 	}

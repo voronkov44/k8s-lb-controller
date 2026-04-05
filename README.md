@@ -1,54 +1,67 @@
 # k8s-lb-controller
 
 `k8s-lb-controller` is a Kubernetes controller built with Kubebuilder and `controller-runtime`.
-Проект предназначен для интеграции `Service` типа `LoadBalancer` с внешним балансировщиком, но сейчас реализован только baseline без provider и без CRD.
+Проект развивается поэтапно как контроллер для `Service` типа `LoadBalancer` без CRD и пока использует только built-in ресурс `core/v1 Service`.
 
 ## Текущий статус
 
-Сейчас реализована Phase 2 MVP:
+Сейчас реализована Phase 3 baseline:
 
-- используется built-in ресурс `core/v1 Service`
-- CRD не используются
-- контроллер отслеживает только `Service`
-- в обработку попадают только сервисы:
+- фильтрация managed `Service` по:
   - `spec.type == LoadBalancer`
   - `spec.loadBalancerClass != nil`
   - `spec.loadBalancerClass == K8S_LB_CONTROLLER_LOAD_BALANCER_CLASS`
-- matching `Service` получает внешний IP из настроенного статического пула
-- IP записывается в `.status.loadBalancer.ingress`
-- при повторных reconcile статус не переписывается без необходимости
-- allocator опирается только на текущее состояние живых managed `Service`
+- статический IPAM поверх `K8S_LB_CONTROLLER_IP_POOL`
+- обновление `.status.loadBalancer.ingress`
+- идемпотентный reconcile без лишних status update
+- mock provider с in-memory state
+- finalizer на managed `Service`
+- cleanup provider state при удалении `Service`
 
-Пока сознательно не реализованы:
+## Что именно умеет контроллер
 
-- provider
-- HAProxy integration
+Для matching `Service` контроллер:
+
+1. добавляет finalizer `iedge.local/service-lb-finalizer`
+2. выделяет или переиспользует внешний IP из configured static pool
+3. записывает IP в `.status.loadBalancer.ingress`
+4. синхронизирует desired state в mock provider
+5. повторно не переписывает status без необходимости
+
+Для deleting managed `Service` контроллер:
+
+1. видит `DeletionTimestamp`
+2. вызывает cleanup в mock provider
+3. удаляет finalizer
+4. не оставляет объект зависшим в `Terminating`
+
+Важно: provider state сейчас только mock/in-memory и нужен как подготовка к будущему реальному HAProxy provider.
+
+## Пока сознательно не реализовано
+
+- реальный HAProxy provider
 - EndpointSlice logic
-- finalizer и cleanup
-- persistent state для аллокаций
-- CRD и Helm chart
+- backend discovery
+- multi-port backend behavior
+- CRD
+- Helm chart
+- persistent provider state
+- cleanup `Service.status` при удалении
 
 ## Структура
 
-- `cmd/main.go` — entrypoint, manager setup, logger, healthz/readyz
-- `internal/config/config.go` — env-конфиг и валидация
-- `internal/controller/service_controller.go` — reconcile для `Service`
-- `internal/controller/service_filter.go` — фильтрация managed `Service`
-- `internal/ipam` — статический IPAM поверх configured pool
+- `cmd/main.go` — entrypoint и wiring зависимостей
+- `internal/config` — env-конфиг
+- `internal/controller` — reconcile, filtering, finalizer flow
+- `internal/ipam` — stateless-ish IP allocation
 - `internal/status` — helper для `Service.status.loadBalancer.ingress`
-
-## Требования
-
-- Go `1.26`
-- Docker
-- kubectl
-- kind или k3d для локальной проверки в кластере
+- `internal/provider` — provider interface и mock provider
 
 ## Переменные окружения
 
 Приложение автоматически пытается загрузить `.env` при старте.
-Если файла нет, используются обычные переменные окружения и default values.
-Если переменная уже задана в окружении ОС или CI, она имеет приоритет над значением из `.env`.
+Если файла нет, используются обычные env и default values.
+Если переменная уже задана в окружении ОС или CI, она имеет приоритет над `.env`.
 
 `Makefile` тоже автоматически подхватывает `.env`, если файл существует.
 
@@ -83,33 +96,11 @@ cp .env.example .env
 make run
 ```
 
-Можно и без `.env`:
+Или без `.env`:
 
 ```sh
 make run
 ```
-
-Переопределение из shell по-прежнему работает:
-
-```sh
-K8S_LB_CONTROLLER_LOG_LEVEL=debug make run
-```
-
-## Что сейчас умеет контроллер
-
-Во время reconcile контроллер:
-
-1. читает `Service` по `namespace/name`
-2. игнорирует отсутствующие объекты без ошибки
-3. игнорирует все сервисы, которые не подходят под фильтр
-4. пропускает `Service`, который уже удаляется
-5. вычисляет занятые IP по текущим managed `Service`
-6. сохраняет уже назначенный корректный IP, если он не конфликтует
-7. иначе выбирает первый свободный IP из пула
-8. обновляет `.status.loadBalancer.ingress` только при реальном изменении
-9. возвращает `ctrl.Result{RequeueAfter: ...}`
-
-После назначения IP `kubectl get svc` начинает показывать `EXTERNAL-IP`.
 
 ## Пример matching Service
 
@@ -166,7 +157,7 @@ spec:
 EOF
 ```
 
-Применить matching `Service`:
+Создать matching `Service`:
 
 ```sh
 kubectl apply -n demo -f - <<'EOF'
@@ -185,15 +176,24 @@ spec:
 EOF
 ```
 
-Проверить, что появился `EXTERNAL-IP`:
+Проверить `EXTERNAL-IP` и finalizer:
 
 ```sh
 kubectl get svc demo -n demo
 kubectl get svc demo -n demo -o jsonpath='{.status.loadBalancer.ingress[0].ip}'; echo
-kubectl logs -n k8s-lb-controller-system deployment/k8s-lb-controller-controller-manager -c manager -f
+kubectl get svc demo -n demo -o jsonpath='{.metadata.finalizers}'; echo
 ```
 
 Ожидаемо первым будет назначен IP `203.0.113.10`.
+
+Удалить `Service` и убедиться, что объект не зависает:
+
+```sh
+kubectl delete svc demo -n demo
+kubectl get svc demo -n demo
+```
+
+Контроллер перед удалением выполнит cleanup mock provider state и затем снимет finalizer.
 
 ## Локальная проверка
 
@@ -201,6 +201,7 @@ kubectl logs -n k8s-lb-controller-system deployment/k8s-lb-controller-controller
 make manifests
 make lint
 make test
+make run
 ```
 
 E2E:
@@ -211,15 +212,8 @@ make test-e2e
 
 ## Деплой в кластер
 
-Сборка и публикация образа:
-
 ```sh
 make docker-build docker-push IMG=<registry>/k8s-lb-controller:<tag>
-```
-
-Деплой:
-
-```sh
 make deploy IMG=<registry>/k8s-lb-controller:<tag>
 ```
 
@@ -231,6 +225,6 @@ make undeploy
 
 ## Примечания
 
-- `make install` и `make uninstall` сейчас ничего не делают, потому что в проекте нет CRD
 - scaffold Kubebuilder сохранён
 - `K8S_LB_CONTROLLER_IP_POOL` должен содержать уникальные IPv4-адреса через запятую
+- mock provider не является source of truth для IP allocation
