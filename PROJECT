@@ -1,5 +1,5 @@
 cliVersion: 4.11.1
-domain: diploma.local
+domain: example.com
 layout:
 - go.kubebuilder.io/v4
 projectName: k8s-lb-controller
