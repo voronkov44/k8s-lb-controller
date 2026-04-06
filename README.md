@@ -1,6 +1,6 @@
 # k8s-lb-controller
 
-`k8s-lb-controller` is a Kubernetes controller built with Kubebuilder and `controller-runtime`.
+`k8s-lb-controller` is a Kubernetes controller built with `controller-runtime` and a Kubebuilder-based project layout.
 Проект решает узкую, понятную задачу: обрабатывает `Service` типа `LoadBalancer` с `loadBalancerClass: iedge.local/service-lb`, назначает им внешний IP из статического пула и синхронизирует file-based конфигурацию HAProxy по данным из `EndpointSlice`.
 
 Текущая цель репозитория: defendable MVP без CRD, без Helm chart и без сложной сетевой логики. Контроллер работает только с built-in ресурсами Kubernetes:
@@ -48,7 +48,7 @@
 
 Phase 1:
 
-- scaffold Kubebuilder сохранён
+- сохранён и аккуратно адаптирован Kubebuilder-based project layout
 - загрузка `.env` через `godotenv`
 - manager и wiring controller-runtime
 - Service reconciler
@@ -152,7 +152,7 @@ K8S_LB_CONTROLLER_HAPROXY_RELOAD_COMMAND=
 
 - если validate command пустой, config просто атомарно записывается
 - если reload command пустой, это считается нормальным dev/demo режимом
-- placeholder `{{config}}` заменяется на путь к config file
+- token `{{config}}` заменяется на путь к config file
 - для validate используется candidate file path
 - для reload используется active config path
 
@@ -350,7 +350,7 @@ cat /tmp/k8s-lb-controller-haproxy.cfg
 ## Metrics
 
 Метрики доступны на стандартном endpoint `/metrics`.
-В `config/default` включён обычный metrics `Service`, а `ServiceMonitor` остаётся отдельной optional-конфигурацией в `config/prometheus` для кластеров с Prometheus Operator.
+В `config/default` включён обычный metrics `Service`, а `ServiceMonitor` остаётся отдельным optional manifest в `config/prometheus` для кластеров с Prometheus Operator.
 
 При локальном запуске:
 

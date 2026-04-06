@@ -43,7 +43,6 @@ import (
 	"github.com/f1lzz/k8s-lb-controller/internal/controller"
 	controllermetrics "github.com/f1lzz/k8s-lb-controller/internal/metrics"
 	haproxyprovider "github.com/f1lzz/k8s-lb-controller/internal/provider/haproxy"
-	// +kubebuilder:scaffold:imports
 )
 
 var (
@@ -73,8 +72,6 @@ type gracefulShutdownObserver struct {
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-
-	// +kubebuilder:scaffold:scheme
 }
 
 func main() {
@@ -144,7 +141,6 @@ func main() {
 		setupLog.Error(err, "unable to set up controllers")
 		os.Exit(1)
 	}
-	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")

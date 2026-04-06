@@ -6,5 +6,5 @@ resources:
 - ../manager
 - metrics_service.yaml
 
-# Optional: enable this only when the Prometheus Operator CRDs are installed.
+# Uncomment to install the optional ServiceMonitor when the Prometheus Operator CRDs are available.
 #- ../prometheus
