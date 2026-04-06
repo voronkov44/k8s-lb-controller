@@ -121,12 +121,14 @@ Helm chart intentionally отложен на следующий отдельны
 | `K8S_LB_CONTROLLER_LOAD_BALANCER_CLASS` | `iedge.local/service-lb` |
 | `K8S_LB_CONTROLLER_IP_POOL` | `203.0.113.10,203.0.113.11,203.0.113.12` |
 | `K8S_LB_CONTROLLER_REQUEUE_AFTER` | `30s` |
+| `K8S_LB_CONTROLLER_GRACEFUL_SHUTDOWN_TIMEOUT` | `15s` |
 | `K8S_LB_CONTROLLER_LOG_LEVEL` | `info` |
 | `K8S_LB_CONTROLLER_HAPROXY_CONFIG_PATH` | `/tmp/k8s-lb-controller-haproxy.cfg` |
 | `K8S_LB_CONTROLLER_HAPROXY_VALIDATE_COMMAND` | empty |
 | `K8S_LB_CONTROLLER_HAPROXY_RELOAD_COMMAND` | empty |
 
 Поддерживаемые уровни логирования: `debug`, `info`, `warn`, `error`.
+`K8S_LB_CONTROLLER_REQUEUE_AFTER` используется как retry interval только для managed `Service`, которые временно не получили IP из пула.
 
 В репозитории есть готовый [.env.example](.env.example):
 
@@ -137,6 +139,7 @@ K8S_LB_CONTROLLER_LEADER_ELECT=false
 K8S_LB_CONTROLLER_LOAD_BALANCER_CLASS=iedge.local/service-lb
 K8S_LB_CONTROLLER_IP_POOL=203.0.113.10,203.0.113.11,203.0.113.12
 K8S_LB_CONTROLLER_REQUEUE_AFTER=30s
+K8S_LB_CONTROLLER_GRACEFUL_SHUTDOWN_TIMEOUT=15s
 K8S_LB_CONTROLLER_LOG_LEVEL=info
 K8S_LB_CONTROLLER_HAPROXY_CONFIG_PATH=/tmp/k8s-lb-controller-haproxy.cfg
 K8S_LB_CONTROLLER_HAPROXY_VALIDATE_COMMAND=
@@ -347,6 +350,7 @@ cat /tmp/k8s-lb-controller-haproxy.cfg
 ## Metrics
 
 Метрики доступны на стандартном endpoint `/metrics`.
+В `config/default` включён обычный metrics `Service`, а `ServiceMonitor` остаётся отдельной optional-конфигурацией в `config/prometheus` для кластеров с Prometheus Operator.
 
 При локальном запуске:
 

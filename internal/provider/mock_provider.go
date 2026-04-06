@@ -20,21 +20,29 @@ func NewMockProvider() *MockProvider {
 }
 
 // Ensure upserts the desired Service state.
-func (p *MockProvider) Ensure(_ context.Context, service Service) error {
+func (p *MockProvider) Ensure(_ context.Context, service Service) (bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	if current, ok := p.services[service.Ref()]; ok && current.Equal(service) {
+		return false, nil
+	}
+
 	p.services[service.Ref()] = service.DeepCopy()
-	return nil
+	return true, nil
 }
 
 // Delete removes Service state and succeeds even when the entry does not exist.
-func (p *MockProvider) Delete(_ context.Context, ref ServiceRef) error {
+func (p *MockProvider) Delete(_ context.Context, ref ServiceRef) (bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	if _, ok := p.services[ref]; !ok {
+		return false, nil
+	}
+
 	delete(p.services, ref)
-	return nil
+	return true, nil
 }
 
 // Get returns a copy of the stored Service state when present.

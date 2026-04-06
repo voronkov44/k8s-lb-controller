@@ -26,7 +26,7 @@ const (
 	EnvLoadBalancerClass = "K8S_LB_CONTROLLER_LOAD_BALANCER_CLASS"
 	// EnvIPPool configures the external IPv4 address pool used for matching Services.
 	EnvIPPool = "K8S_LB_CONTROLLER_IP_POOL"
-	// EnvRequeueAfter configures the requeue interval for matching Services.
+	// EnvRequeueAfter configures how long to wait before retrying a managed Service that could not obtain an IP.
 	EnvRequeueAfter = "K8S_LB_CONTROLLER_REQUEUE_AFTER"
 	// EnvGracefulShutdownTimeout configures how long the manager waits for runnables to stop after shutdown begins.
 	EnvGracefulShutdownTimeout = "K8S_LB_CONTROLLER_GRACEFUL_SHUTDOWN_TIMEOUT"
@@ -51,7 +51,7 @@ const (
 	DefaultLoadBalancerClass = "iedge.local/service-lb"
 	// DefaultIPPool is the default external IPv4 address pool used for managed Services.
 	DefaultIPPool = "203.0.113.10,203.0.113.11,203.0.113.12"
-	// DefaultRequeueAfter is the default reconciliation requeue interval for matching Services.
+	// DefaultRequeueAfter is the default retry interval for managed Services waiting for a free IP.
 	DefaultRequeueAfter = 30 * time.Second
 	// DefaultGracefulShutdownTimeout is the default maximum graceful shutdown time for the controller manager.
 	DefaultGracefulShutdownTimeout = 15 * time.Second

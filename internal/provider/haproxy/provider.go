@@ -39,47 +39,57 @@ func NewProvider(cfg Config) (*Provider, error) {
 	}, nil
 }
 
-// Ensure upserts a Service entry, rewrites the aggregate config, and optionally validates/reloads it.
-func (p *Provider) Ensure(ctx context.Context, service provider.Service) error {
+// Ensure upserts a Service entry and applies the aggregate config only when the rendered output changes.
+func (p *Provider) Ensure(ctx context.Context, service provider.Service) (bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	nextState := cloneServices(p.services)
 	nextState[service.Ref()] = service.DeepCopy()
 
-	if err := p.apply(ctx, nextState); err != nil {
-		return err
+	changed, err := p.apply(ctx, nextState)
+	if err != nil {
+		return false, err
 	}
 
 	p.services = nextState
-	return nil
+	return changed, nil
 }
 
-// Delete removes a Service entry, rewrites the aggregate config, and succeeds even when the entry is absent.
-func (p *Provider) Delete(ctx context.Context, ref provider.ServiceRef) error {
+// Delete removes a Service entry and applies the aggregate config only when the rendered output changes.
+func (p *Provider) Delete(ctx context.Context, ref provider.ServiceRef) (bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	nextState := cloneServices(p.services)
 	delete(nextState, ref)
 
-	if err := p.apply(ctx, nextState); err != nil {
-		return err
+	changed, err := p.apply(ctx, nextState)
+	if err != nil {
+		return false, err
 	}
 
 	p.services = nextState
-	return nil
+	return changed, nil
 }
 
-func (p *Provider) apply(ctx context.Context, services map[provider.ServiceRef]provider.Service) error {
+func (p *Provider) apply(ctx context.Context, services map[provider.ServiceRef]provider.Service) (bool, error) {
 	renderedConfig, err := Render(servicesToList(services))
 	if err != nil {
-		return err
+		return false, err
+	}
+
+	upToDate, err := renderedConfigMatchesCurrentFile(p.config.ConfigPath, renderedConfig)
+	if err != nil {
+		return false, err
+	}
+	if upToDate {
+		return false, nil
 	}
 
 	candidatePath, cleanupCandidate, err := writeCandidateFile(p.config.ConfigPath, []byte(renderedConfig))
 	if err != nil {
-		return fmt.Errorf("write candidate config: %w", err)
+		return false, fmt.Errorf("write candidate config: %w", err)
 	}
 	applied := false
 	defer func() {
@@ -89,23 +99,23 @@ func (p *Provider) apply(ctx context.Context, services map[provider.ServiceRef]p
 	}()
 
 	if err := runCommand(ctx, p.config.ValidateCommand, candidatePath); err != nil {
-		return fmt.Errorf("validate config: %w", err)
+		return false, fmt.Errorf("validate config: %w", err)
 	}
 
 	if err := os.Rename(candidatePath, p.config.ConfigPath); err != nil {
-		return fmt.Errorf("replace active config %q: %w", p.config.ConfigPath, err)
+		return false, fmt.Errorf("replace active config %q: %w", p.config.ConfigPath, err)
 	}
 	applied = true
 
 	if err := syncPath(filepath.Dir(p.config.ConfigPath)); err != nil {
-		return fmt.Errorf("sync config directory: %w", err)
+		return false, fmt.Errorf("sync config directory: %w", err)
 	}
 
 	if err := runCommand(ctx, p.config.ReloadCommand, p.config.ConfigPath); err != nil {
-		return fmt.Errorf("reload HAProxy: %w", err)
+		return false, fmt.Errorf("reload HAProxy: %w", err)
 	}
 
-	return nil
+	return true, nil
 }
 
 func writeCandidateFile(configPath string, data []byte) (string, func(), error) {
@@ -168,6 +178,19 @@ func runCommand(ctx context.Context, command, configPath string) error {
 	}
 
 	return nil
+}
+
+func renderedConfigMatchesCurrentFile(configPath, renderedConfig string) (bool, error) {
+	currentConfig, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+
+		return false, fmt.Errorf("read active config %q: %w", configPath, err)
+	}
+
+	return string(currentConfig) == renderedConfig, nil
 }
 
 func syncPath(path string) error {

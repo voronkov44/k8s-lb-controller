@@ -2,6 +2,7 @@ package status
 
 import (
 	"context"
+	"net/netip"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -51,7 +52,7 @@ func TestUpdateServiceLoadBalancerStatus(t *testing.T) {
 	}
 
 	t.Run("updates status when needed", func(t *testing.T) {
-		service := newStatusService("demo", "default", "")
+		service := newStatusService("")
 		k8sClient := fake.NewClientBuilder().
 			WithScheme(scheme).
 			WithStatusSubresource(&corev1.Service{}).
@@ -83,7 +84,7 @@ func TestUpdateServiceLoadBalancerStatus(t *testing.T) {
 	})
 
 	t.Run("skips update when status is already desired", func(t *testing.T) {
-		service := newStatusService("demo", "default", "203.0.113.10")
+		service := newStatusService("203.0.113.10")
 		k8sClient := fake.NewClientBuilder().
 			WithScheme(scheme).
 			WithStatusSubresource(&corev1.Service{}).
@@ -107,7 +108,7 @@ func TestUpdateServiceLoadBalancerStatus(t *testing.T) {
 
 	t.Run("skips update when status has same IP with IPMode", func(t *testing.T) {
 		ipMode := corev1.LoadBalancerIPModeVIP
-		service := newStatusServiceWithIngress("demo", "default", corev1.LoadBalancerIngress{
+		service := newStatusServiceWithIngress(corev1.LoadBalancerIngress{
 			IP:     "203.0.113.10",
 			IPMode: &ipMode,
 		})
@@ -142,8 +143,24 @@ func TestUpdateServiceLoadBalancerStatus(t *testing.T) {
 	})
 }
 
-func newStatusService(name, namespace, ingressIP string) *corev1.Service {
-	service := newStatusServiceWithIngress(name, namespace, corev1.LoadBalancerIngress{})
+func TestHasLoadBalancerIngressIPInPool(t *testing.T) {
+	service := newStatusService("203.0.113.10")
+	pool := []netip.Addr{
+		netip.MustParseAddr("203.0.113.10"),
+		netip.MustParseAddr("203.0.113.11"),
+	}
+
+	if !HasLoadBalancerIngressIPInPool(service, pool) {
+		t.Fatal("HasLoadBalancerIngressIPInPool() = false, want true")
+	}
+
+	if HasLoadBalancerIngressIPInPool(newStatusService("198.51.100.10"), pool) {
+		t.Fatal("HasLoadBalancerIngressIPInPool() = true, want false")
+	}
+}
+
+func newStatusService(ingressIP string) *corev1.Service {
+	service := newStatusServiceWithIngress(corev1.LoadBalancerIngress{})
 	if ingressIP == "" {
 		return service
 	}
@@ -152,11 +169,11 @@ func newStatusService(name, namespace, ingressIP string) *corev1.Service {
 	return service
 }
 
-func newStatusServiceWithIngress(name, namespace string, ingress corev1.LoadBalancerIngress) *corev1.Service {
+func newStatusServiceWithIngress(ingress corev1.LoadBalancerIngress) *corev1.Service {
 	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
+			Name:      "demo",
+			Namespace: "default",
 		},
 	}
 

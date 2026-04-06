@@ -8,8 +8,10 @@ import (
 
 // Provider manages external load balancer state for a single Service.
 type Provider interface {
-	Ensure(ctx context.Context, service Service) error
-	Delete(ctx context.Context, ref ServiceRef) error
+	// Ensure makes the desired Service state present and reports whether the provider state changed.
+	Ensure(ctx context.Context, service Service) (bool, error)
+	// Delete removes the desired Service state and reports whether the provider state changed.
+	Delete(ctx context.Context, ref ServiceRef) (bool, error)
 }
 
 // ServiceRef identifies a Service by namespace and name.
@@ -55,6 +57,21 @@ func (s Service) Ref() ServiceRef {
 	}
 }
 
+// Equal reports whether the Service describes the same provider state.
+func (s Service) Equal(other Service) bool {
+	if s.Namespace != other.Namespace ||
+		s.Name != other.Name ||
+		s.LoadBalancerClass != other.LoadBalancerClass ||
+		s.ExternalIP != other.ExternalIP ||
+		len(s.Ports) != len(other.Ports) {
+		return false
+	}
+
+	return slices.EqualFunc(s.Ports, other.Ports, func(left, right ServicePort) bool {
+		return left.Equal(right)
+	})
+}
+
 // DeepCopy returns a detached copy of the Service model.
 func (s Service) DeepCopy() Service {
 	copied := s
@@ -70,4 +87,13 @@ func (p ServicePort) DeepCopy() ServicePort {
 	copied := p
 	copied.Backends = slices.Clone(p.Backends)
 	return copied
+}
+
+// Equal reports whether the ServicePort describes the same provider state.
+func (p ServicePort) Equal(other ServicePort) bool {
+	return p.Name == other.Name &&
+		p.Protocol == other.Protocol &&
+		p.Port == other.Port &&
+		p.TargetPort == other.TargetPort &&
+		slices.Equal(p.Backends, other.Backends)
 }

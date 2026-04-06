@@ -86,8 +86,8 @@ func TestServiceReconcilerReconcileEnsuresManagedService(t *testing.T) {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
 
-	if result != (ctrl.Result{RequeueAfter: 30 * time.Second}) {
-		t.Fatalf("Reconcile() result = %+v, want requeue result", result)
+	if result != (ctrl.Result{}) {
+		t.Fatalf("Reconcile() result = %+v, want empty result", result)
 	}
 
 	stored := getStoredService(t, countingClient, types.NamespacedName{Namespace: "default", Name: "demo"})
@@ -139,8 +139,8 @@ func TestServiceReconcilerReconcileReusesAssignedIPFromStatus(t *testing.T) {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
 
-	if result != (ctrl.Result{RequeueAfter: 30 * time.Second}) {
-		t.Fatalf("Reconcile() result = %+v, want requeue result", result)
+	if result != (ctrl.Result{}) {
+		t.Fatalf("Reconcile() result = %+v, want empty result", result)
 	}
 
 	stored := getStoredService(t, countingClient, types.NamespacedName{Namespace: "default", Name: "demo"})
@@ -360,12 +360,69 @@ func TestServiceReconcilerReconcileHandlesExhaustedPoolGracefully(t *testing.T) 
 	}
 }
 
+func TestServiceReconcilerReconcileCleansUpServiceThatNoLongerMatchesController(t *testing.T) {
+	class := managedServiceClass
+	service := newReconcileServiceWithStatus("demo", &class, "203.0.113.10")
+	service.Spec.Type = corev1.ServiceTypeClusterIP
+	service.Finalizers = []string{serviceFinalizer}
+
+	fakeProvider := newFakeProvider()
+	if _, err := fakeProvider.Ensure(context.Background(), provider.Service{
+		Namespace:         "default",
+		Name:              "demo",
+		LoadBalancerClass: class,
+		ExternalIP:        "203.0.113.10",
+	}); err != nil {
+		t.Fatalf("Ensure() seed error = %v", err)
+	}
+
+	reconciler, countingClient, _ := newTestServiceReconciler(t, fakeProvider, service)
+
+	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "default", Name: "demo"},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+
+	if result != (ctrl.Result{}) {
+		t.Fatalf("Reconcile() result = %+v, want empty result", result)
+	}
+
+	stored := getStoredService(t, countingClient, types.NamespacedName{Namespace: "default", Name: "demo"})
+	if hasServiceFinalizer(stored) {
+		t.Fatalf("service finalizers = %v, want no finalizer", stored.Finalizers)
+	}
+
+	if len(stored.Status.LoadBalancer.Ingress) != 0 {
+		t.Fatalf("service status ingress = %+v, want empty ingress", stored.Status.LoadBalancer.Ingress)
+	}
+
+	if len(fakeProvider.deleteCalls) != 1 {
+		t.Fatalf("provider delete calls = %d, want 1", len(fakeProvider.deleteCalls))
+	}
+
+	if _, ok := fakeProvider.Get(provider.ServiceRef{Namespace: "default", Name: "demo"}); ok {
+		t.Fatal("provider state still present after unmanaged cleanup")
+	}
+
+	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "default", Name: "demo"},
+	}); err != nil {
+		t.Fatalf("second Reconcile() error = %v", err)
+	}
+
+	if len(fakeProvider.deleteCalls) != 1 {
+		t.Fatalf("provider delete calls after second reconcile = %d, want 1", len(fakeProvider.deleteCalls))
+	}
+}
+
 func TestServiceReconcilerReconcileDeletesManagedService(t *testing.T) {
 	class := managedServiceClass
 	now := metav1.NewTime(time.Now())
 	service := newDeletingReconcileService("demo", "default", corev1.ServiceTypeLoadBalancer, &class, &now)
 	fakeProvider := newFakeProvider()
-	if err := fakeProvider.Ensure(context.Background(), provider.Service{
+	if _, err := fakeProvider.Ensure(context.Background(), provider.Service{
 		Namespace:         "default",
 		Name:              "demo",
 		LoadBalancerClass: class,
@@ -419,6 +476,10 @@ func TestServiceReconcilerReconcileProviderEnsureErrorReturnsError(t *testing.T)
 	stored := getStoredService(t, countingClient, types.NamespacedName{Namespace: "default", Name: "demo"})
 	if !hasServiceFinalizer(stored) {
 		t.Fatalf("service finalizers = %v, want %q", stored.Finalizers, serviceFinalizer)
+	}
+
+	if len(stored.Status.LoadBalancer.Ingress) != 0 {
+		t.Fatalf("service status ingress = %+v, want empty ingress after provider failure", stored.Status.LoadBalancer.Ingress)
 	}
 }
 
@@ -682,30 +743,38 @@ func newFakeProvider() *fakeProvider {
 	}
 }
 
-func (p *fakeProvider) Ensure(_ context.Context, service provider.Service) error {
+func (p *fakeProvider) Ensure(_ context.Context, service provider.Service) (bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	p.ensureCalls = append(p.ensureCalls, service.DeepCopy())
 	if p.ensureErr != nil {
-		return p.ensureErr
+		return false, p.ensureErr
+	}
+
+	if current, ok := p.services[service.Ref()]; ok && current.Equal(service) {
+		return false, nil
 	}
 
 	p.services[service.Ref()] = service.DeepCopy()
-	return nil
+	return true, nil
 }
 
-func (p *fakeProvider) Delete(_ context.Context, ref provider.ServiceRef) error {
+func (p *fakeProvider) Delete(_ context.Context, ref provider.ServiceRef) (bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	p.deleteCalls = append(p.deleteCalls, ref)
 	if p.deleteErr != nil {
-		return p.deleteErr
+		return false, p.deleteErr
+	}
+
+	if _, ok := p.services[ref]; !ok {
+		return false, nil
 	}
 
 	delete(p.services, ref)
-	return nil
+	return true, nil
 }
 
 func (p *fakeProvider) Get(ref provider.ServiceRef) (provider.Service, bool) {

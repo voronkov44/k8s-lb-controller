@@ -69,6 +69,10 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (re
 
 	loadBalancerClass := serviceLoadBalancerClass(service)
 	if !isManagedLoadBalancerService(service, r.Config.LoadBalancerClass) {
+		if err := r.reconcileUnmanagedService(ctx, log, service); err != nil {
+			return ctrl.Result{}, err
+		}
+
 		log.V(1).Info("ignoring service because it does not match controller selection",
 			"serviceType", service.Spec.Type,
 			"loadBalancerClass", loadBalancerClass,
@@ -122,6 +126,32 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (re
 		log.Info("assigned external IP", "externalIP", allocation.IP.String())
 	}
 
+	endpointSlices, err := r.listEndpointSlicesForService(ctx, service)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("list EndpointSlices for service %s: %w", req.String(), err)
+	}
+
+	discoveredBackends := backends.Discover(service, endpointSlices)
+	providerService := buildProviderService(service, allocation.IP.String(), discoveredBackends)
+	providerChanged, err := r.Provider.Ensure(ctx, providerService)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensure provider state for service %s: %w", req.String(), err)
+	}
+
+	if providerChanged {
+		log.Info("ensured provider state",
+			"externalIP", allocation.IP.String(),
+			"servicePorts", len(providerService.Ports),
+			"backendCount", providerBackendCount(providerService),
+		)
+	} else {
+		log.V(1).Info("provider state already up to date",
+			"externalIP", allocation.IP.String(),
+			"servicePorts", len(providerService.Ports),
+			"backendCount", providerBackendCount(providerService),
+		)
+	}
+
 	desiredIngress := servicestatus.DesiredLoadBalancerIngress(allocation.IP.String())
 	updated, err := servicestatus.UpdateServiceLoadBalancerStatus(ctx, r.Client, service, desiredIngress)
 	if err != nil {
@@ -130,26 +160,11 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (re
 
 	if updated {
 		log.Info("updated service status", "externalIP", allocation.IP.String())
+	} else if !finalizerAdded && !providerChanged {
+		log.V(1).Info("service reconcile resulted in no changes", "externalIP", allocation.IP.String())
 	}
 
-	endpointSlices, err := r.listEndpointSlicesForService(ctx, service)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("list EndpointSlices for service %s: %w", req.String(), err)
-	}
-
-	discoveredBackends := backends.Discover(service, endpointSlices)
-	providerService := buildProviderService(service, allocation.IP.String(), discoveredBackends)
-	if err := r.Provider.Ensure(ctx, providerService); err != nil {
-		return ctrl.Result{}, fmt.Errorf("ensure provider state for service %s: %w", req.String(), err)
-	}
-
-	log.Info("ensured provider state",
-		"externalIP", allocation.IP.String(),
-		"servicePorts", len(providerService.Ports),
-		"backendCount", providerBackendCount(providerService),
-	)
-
-	return ctrl.Result{RequeueAfter: r.Config.RequeueAfter}, nil
+	return ctrl.Result{}, nil
 }
 
 // SetupWithManager wires the controller into the manager.
@@ -212,13 +227,81 @@ func (r *ServiceReconciler) reconcileDeletingService(
 	}
 
 	log.Info("cleaning up provider state")
-	if err := r.Provider.Delete(ctx, serviceRef); err != nil {
+	providerChanged, err := r.Provider.Delete(ctx, serviceRef)
+	if err != nil {
 		return fmt.Errorf("delete provider state for service %s: %w", serviceRef.String(), err)
 	}
-	log.Info("cleaned up provider state")
+	if providerChanged {
+		log.Info("cleaned up provider state")
+	} else {
+		log.V(1).Info("provider state already absent during deletion")
+	}
 
 	if err := r.removeServiceFinalizer(ctx, service); err != nil {
 		return fmt.Errorf("remove finalizer for service %s: %w", serviceRef.String(), err)
+	}
+
+	log.Info("removed service finalizer", "finalizer", serviceFinalizer)
+
+	return nil
+}
+
+func (r *ServiceReconciler) reconcileUnmanagedService(
+	ctx context.Context,
+	log logr.Logger,
+	service *corev1.Service,
+) error {
+	if service == nil {
+		return nil
+	}
+
+	ownedStatus := servicestatus.HasLoadBalancerIngressIPInPool(service, r.Config.IPPool)
+	if !hasServiceFinalizer(service) && !ownedStatus {
+		return nil
+	}
+
+	serviceRef := provider.ServiceRef{
+		Namespace: service.Namespace,
+		Name:      service.Name,
+	}
+
+	log.Info("service no longer matches controller selection, cleaning up managed state")
+
+	providerChanged, err := r.Provider.Delete(ctx, serviceRef)
+	if err != nil {
+		return fmt.Errorf("delete provider state for unmanaged service %s: %w", serviceRef.String(), err)
+	}
+
+	if providerChanged {
+		log.Info("cleaned up provider state for unmanaged service")
+	} else {
+		log.V(1).Info("provider state already absent for unmanaged service")
+	}
+
+	statusWasCleared := false
+	if hasServiceFinalizer(service) || ownedStatus {
+		statusWasCleared, err = servicestatus.UpdateServiceLoadBalancerStatus(ctx, r.Client, service, nil)
+		if err != nil {
+			return fmt.Errorf("clear load balancer status for unmanaged service %s: %w", serviceRef.String(), err)
+		}
+
+		if statusWasCleared {
+			log.Info("cleared service load balancer status")
+		}
+	}
+
+	if !hasServiceFinalizer(service) {
+		return nil
+	}
+
+	if statusWasCleared {
+		if err := r.Get(ctx, client.ObjectKeyFromObject(service), service); err != nil {
+			return fmt.Errorf("refresh unmanaged service %s after status update: %w", serviceRef.String(), err)
+		}
+	}
+
+	if err := r.removeServiceFinalizer(ctx, service); err != nil {
+		return fmt.Errorf("remove finalizer for unmanaged service %s: %w", serviceRef.String(), err)
 	}
 
 	log.Info("removed service finalizer", "finalizer", serviceFinalizer)

@@ -130,26 +130,28 @@ type instrumentedProvider struct {
 	refs map[provider.ServiceRef]struct{}
 }
 
-func (p *instrumentedProvider) Ensure(ctx context.Context, service provider.Service) error {
-	if err := p.next.Ensure(ctx, service); err != nil {
+func (p *instrumentedProvider) Ensure(ctx context.Context, service provider.Service) (bool, error) {
+	changed, err := p.next.Ensure(ctx, service)
+	if err != nil {
 		recordProviderOperation("ensure", "error")
-		return err
+		return false, err
 	}
 
 	recordProviderOperation("ensure", "success")
 	p.trackEnsure(service.Ref())
-	return nil
+	return changed, nil
 }
 
-func (p *instrumentedProvider) Delete(ctx context.Context, ref provider.ServiceRef) error {
-	if err := p.next.Delete(ctx, ref); err != nil {
+func (p *instrumentedProvider) Delete(ctx context.Context, ref provider.ServiceRef) (bool, error) {
+	changed, err := p.next.Delete(ctx, ref)
+	if err != nil {
 		recordProviderOperation("delete", "error")
-		return err
+		return false, err
 	}
 
 	recordProviderOperation("delete", "success")
 	p.trackDelete(ref)
-	return nil
+	return changed, nil
 }
 
 func (p *instrumentedProvider) trackEnsure(ref provider.ServiceRef) {

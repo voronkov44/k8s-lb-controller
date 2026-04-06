@@ -118,7 +118,7 @@ func main() {
 
 	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
 		Scheme:                  scheme,
-		Metrics:                 metricsserver.Options{BindAddress: cfg.MetricsAddr},
+		Metrics:                 metricsserver.Options{BindAddress: cfg.MetricsAddr, SecureServing: false},
 		HealthProbeBindAddress:  cfg.HealthAddr,
 		LeaderElection:          cfg.LeaderElect,
 		LeaderElectionID:        "ed30ec16.diploma.local",

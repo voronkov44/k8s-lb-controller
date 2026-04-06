@@ -26,7 +26,7 @@ func TestMockProviderEnsureCreatesState(t *testing.T) {
 		},
 	}
 
-	if err := mock.Ensure(context.Background(), service); err != nil {
+	if _, err := mock.Ensure(context.Background(), service); err != nil {
 		t.Fatalf("Ensure() error = %v", err)
 	}
 
@@ -53,13 +53,13 @@ func TestMockProviderEnsureUpdatesExistingState(t *testing.T) {
 		ExternalIP:        "203.0.113.10",
 	}
 
-	if err := mock.Ensure(context.Background(), service); err != nil {
+	if _, err := mock.Ensure(context.Background(), service); err != nil {
 		t.Fatalf("Ensure() error = %v", err)
 	}
 
 	service.ExternalIP = "203.0.113.11"
 	service.Ports = []ServicePort{{Name: "http", Protocol: "TCP", Port: 80, TargetPort: "80"}}
-	if err := mock.Ensure(context.Background(), service); err != nil {
+	if _, err := mock.Ensure(context.Background(), service); err != nil {
 		t.Fatalf("Ensure() second error = %v", err)
 	}
 
@@ -85,11 +85,11 @@ func TestMockProviderDeleteRemovesState(t *testing.T) {
 		ExternalIP: "203.0.113.10",
 	}
 
-	if err := mock.Ensure(context.Background(), service); err != nil {
+	if _, err := mock.Ensure(context.Background(), service); err != nil {
 		t.Fatalf("Ensure() error = %v", err)
 	}
 
-	if err := mock.Delete(context.Background(), service.Ref()); err != nil {
+	if _, err := mock.Delete(context.Background(), service.Ref()); err != nil {
 		t.Fatalf("Delete() error = %v", err)
 	}
 
@@ -101,7 +101,7 @@ func TestMockProviderDeleteRemovesState(t *testing.T) {
 func TestMockProviderDeleteMissingEntryIsNotAnError(t *testing.T) {
 	mock := NewMockProvider()
 
-	if err := mock.Delete(context.Background(), ServiceRef{Namespace: "default", Name: "missing"}); err != nil {
+	if _, err := mock.Delete(context.Background(), ServiceRef{Namespace: "default", Name: "missing"}); err != nil {
 		t.Fatalf("Delete() error = %v", err)
 	}
 }
@@ -111,10 +111,10 @@ func TestMockProviderSnapshotAndList(t *testing.T) {
 	serviceA := Service{Namespace: "b", Name: "demo-b", ExternalIP: "203.0.113.11"}
 	serviceB := Service{Namespace: "a", Name: "demo-a", ExternalIP: "203.0.113.10"}
 
-	if err := mock.Ensure(context.Background(), serviceA); err != nil {
+	if _, err := mock.Ensure(context.Background(), serviceA); err != nil {
 		t.Fatalf("Ensure(serviceA) error = %v", err)
 	}
-	if err := mock.Ensure(context.Background(), serviceB); err != nil {
+	if _, err := mock.Ensure(context.Background(), serviceB); err != nil {
 		t.Fatalf("Ensure(serviceB) error = %v", err)
 	}
 
@@ -151,7 +151,7 @@ func TestMockProviderConcurrentEnsure(t *testing.T) {
 				},
 			}
 
-			_ = mock.Ensure(context.Background(), service)
+			_, _ = mock.Ensure(context.Background(), service)
 		}(i)
 	}
 

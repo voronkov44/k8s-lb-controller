@@ -3,6 +3,8 @@ package status
 import (
 	"context"
 	"fmt"
+	"net/netip"
+	"slices"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -61,6 +63,32 @@ func UpdateServiceLoadBalancerStatus(
 	service.Status = updated.Status
 
 	return true, nil
+}
+
+// HasLoadBalancerIngressIPInPool reports whether the Service currently publishes an IPv4 ingress
+// address from the controller-managed pool.
+func HasLoadBalancerIngressIPInPool(service *corev1.Service, pool []netip.Addr) bool {
+	if service == nil {
+		return false
+	}
+
+	for _, ingress := range service.Status.LoadBalancer.Ingress {
+		ip := strings.TrimSpace(ingress.IP)
+		if ip == "" {
+			continue
+		}
+
+		addr, err := netip.ParseAddr(ip)
+		if err != nil || !addr.Is4() {
+			continue
+		}
+
+		if slices.Contains(pool, addr) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func firstIngressIP(ingresses []corev1.LoadBalancerIngress) (string, bool) {

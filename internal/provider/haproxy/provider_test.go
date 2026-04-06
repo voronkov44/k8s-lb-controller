@@ -106,11 +106,11 @@ func TestProviderEnsureWritesAggregateConfig(t *testing.T) {
 		},
 	})
 
-	if err := haproxyProvider.Ensure(context.Background(), serviceA); err != nil {
+	if _, err := haproxyProvider.Ensure(context.Background(), serviceA); err != nil {
 		t.Fatalf("Ensure(serviceA) error = %v", err)
 	}
 
-	if err := haproxyProvider.Ensure(context.Background(), serviceB); err != nil {
+	if _, err := haproxyProvider.Ensure(context.Background(), serviceB); err != nil {
 		t.Fatalf("Ensure(serviceB) error = %v", err)
 	}
 
@@ -142,14 +142,14 @@ func TestProviderDeleteRewritesConfigWithoutRemovedService(t *testing.T) {
 		{Name: "http", Protocol: "TCP", Port: 81, Backends: []provider.BackendEndpoint{{Address: "10.0.0.11", Port: 8080}}},
 	})
 
-	if err := haproxyProvider.Ensure(context.Background(), serviceA); err != nil {
+	if _, err := haproxyProvider.Ensure(context.Background(), serviceA); err != nil {
 		t.Fatalf("Ensure(serviceA) error = %v", err)
 	}
-	if err := haproxyProvider.Ensure(context.Background(), serviceB); err != nil {
+	if _, err := haproxyProvider.Ensure(context.Background(), serviceB); err != nil {
 		t.Fatalf("Ensure(serviceB) error = %v", err)
 	}
 
-	if err := haproxyProvider.Delete(context.Background(), serviceA.Ref()); err != nil {
+	if _, err := haproxyProvider.Delete(context.Background(), serviceA.Ref()); err != nil {
 		t.Fatalf("Delete() error = %v", err)
 	}
 
@@ -170,7 +170,7 @@ func TestProviderDeleteMissingEntryStillKeepsValidConfig(t *testing.T) {
 		t.Fatalf("NewProvider() error = %v", err)
 	}
 
-	if err := haproxyProvider.Delete(context.Background(), provider.ServiceRef{Namespace: "default", Name: "missing"}); err != nil {
+	if _, err := haproxyProvider.Delete(context.Background(), provider.ServiceRef{Namespace: "default", Name: "missing"}); err != nil {
 		t.Fatalf("Delete() error = %v", err)
 	}
 
@@ -195,7 +195,7 @@ func TestProviderEnsureUpdatesConfigWhenBackendCountChanges(t *testing.T) {
 			Backends: []provider.BackendEndpoint{{Address: "10.0.0.10", Port: 8080}},
 		},
 	})
-	if err := haproxyProvider.Ensure(context.Background(), service); err != nil {
+	if _, err := haproxyProvider.Ensure(context.Background(), service); err != nil {
 		t.Fatalf("Ensure() error = %v", err)
 	}
 
@@ -205,7 +205,7 @@ func TestProviderEnsureUpdatesConfigWhenBackendCountChanges(t *testing.T) {
 		{Address: "10.0.0.10", Port: 8080},
 		{Address: "10.0.0.11", Port: 8080},
 	}
-	if err := haproxyProvider.Ensure(context.Background(), service); err != nil {
+	if _, err := haproxyProvider.Ensure(context.Background(), service); err != nil {
 		t.Fatalf("Ensure() second error = %v", err)
 	}
 
@@ -216,6 +216,57 @@ func TestProviderEnsureUpdatesConfigWhenBackendCountChanges(t *testing.T) {
 
 	if !strings.Contains(after, "server srv_0002_10_0_0_11_8080 10.0.0.11:8080") {
 		t.Fatalf("config missing second backend after update:\n%s", after)
+	}
+}
+
+func TestProviderEnsureSkipsRewriteAndReloadWhenRenderedConfigIsUnchanged(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "haproxy.cfg")
+	reloadScriptPath := filepath.Join(tempDir, "reload.sh")
+	reloadMarkerPath := filepath.Join(tempDir, "reload-count")
+
+	reloadScript := "#!/bin/sh\n" +
+		"echo reload >> " + reloadMarkerPath + "\n"
+	if err := os.WriteFile(reloadScriptPath, []byte(reloadScript), 0o700); err != nil {
+		t.Fatalf("WriteFile(reloadScript) error = %v", err)
+	}
+
+	haproxyProvider, err := NewProvider(Config{
+		ConfigPath:    configPath,
+		ReloadCommand: reloadScriptPath,
+	})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+
+	service := newTestService("default", "demo", "203.0.113.10", []provider.ServicePort{
+		{Name: "http", Protocol: "TCP", Port: 80, Backends: []provider.BackendEndpoint{{Address: "10.0.0.10", Port: 8080}}},
+	})
+
+	changed, err := haproxyProvider.Ensure(context.Background(), service)
+	if err != nil {
+		t.Fatalf("Ensure() error = %v", err)
+	}
+	if !changed {
+		t.Fatal("Ensure() changed = false, want true on first apply")
+	}
+
+	firstReloadCount := countMarkerLines(t, reloadMarkerPath)
+	if firstReloadCount != 1 {
+		t.Fatalf("reload count after first ensure = %d, want 1", firstReloadCount)
+	}
+
+	changed, err = haproxyProvider.Ensure(context.Background(), service)
+	if err != nil {
+		t.Fatalf("Ensure() second error = %v", err)
+	}
+	if changed {
+		t.Fatal("Ensure() changed = true, want false when config is unchanged")
+	}
+
+	secondReloadCount := countMarkerLines(t, reloadMarkerPath)
+	if secondReloadCount != 1 {
+		t.Fatalf("reload count after no-op ensure = %d, want 1", secondReloadCount)
 	}
 }
 
@@ -246,7 +297,7 @@ func TestProviderEnsureValidateFailureReturnsErrorAndDoesNotApplyState(t *testin
 		{Name: "http", Protocol: "TCP", Port: 81, Backends: []provider.BackendEndpoint{{Address: "10.0.0.11", Port: 8080}}},
 	})
 
-	if err := haproxyProvider.Ensure(context.Background(), newService); err == nil {
+	if _, err := haproxyProvider.Ensure(context.Background(), newService); err == nil {
 		t.Fatal("Ensure() error = nil, want non-nil")
 	}
 
@@ -274,7 +325,7 @@ func TestProviderEnsureValidateFailureCleansUpCandidateFiles(t *testing.T) {
 		{Name: "http", Protocol: "TCP", Port: 80, Backends: []provider.BackendEndpoint{{Address: "10.0.0.10", Port: 8080}}},
 	})
 
-	if err := haproxyProvider.Ensure(context.Background(), service); err == nil {
+	if _, err := haproxyProvider.Ensure(context.Background(), service); err == nil {
 		t.Fatal("Ensure() error = nil, want non-nil")
 	}
 
@@ -304,7 +355,7 @@ func TestProviderEnsureReloadFailureReturnsError(t *testing.T) {
 		{Name: "http", Protocol: "TCP", Port: 80, Backends: []provider.BackendEndpoint{{Address: "10.0.0.10", Port: 8080}}},
 	})
 
-	if err := haproxyProvider.Ensure(context.Background(), service); err == nil {
+	if _, err := haproxyProvider.Ensure(context.Background(), service); err == nil {
 		t.Fatal("Ensure() error = nil, want non-nil")
 	}
 
@@ -332,7 +383,7 @@ func TestProviderEnsureWorksWithoutOptionalCommandsAndLeavesNoTempFiles(t *testi
 	service := newTestService("default", "demo", "203.0.113.10", []provider.ServicePort{
 		{Name: "http", Protocol: "TCP", Port: 80, Backends: []provider.BackendEndpoint{{Address: "10.0.0.10", Port: 8080}}},
 	})
-	if err := haproxyProvider.Ensure(context.Background(), service); err != nil {
+	if _, err := haproxyProvider.Ensure(context.Background(), service); err != nil {
 		t.Fatalf("Ensure() error = %v", err)
 	}
 
@@ -367,4 +418,17 @@ func readConfigFile(t *testing.T, path string) string {
 	}
 
 	return string(data)
+}
+
+func countMarkerLines(t *testing.T, path string) int {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", path, err)
+	}
+
+	return len(strings.FieldsFunc(string(data), func(r rune) bool {
+		return r == '\n'
+	}))
 }
