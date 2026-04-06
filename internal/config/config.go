@@ -28,6 +28,8 @@ const (
 	EnvIPPool = "K8S_LB_CONTROLLER_IP_POOL"
 	// EnvRequeueAfter configures the requeue interval for matching Services.
 	EnvRequeueAfter = "K8S_LB_CONTROLLER_REQUEUE_AFTER"
+	// EnvGracefulShutdownTimeout configures how long the manager waits for runnables to stop after shutdown begins.
+	EnvGracefulShutdownTimeout = "K8S_LB_CONTROLLER_GRACEFUL_SHUTDOWN_TIMEOUT"
 	// EnvLogLevel configures the controller log level.
 	EnvLogLevel = "K8S_LB_CONTROLLER_LOG_LEVEL"
 	// EnvHAProxyConfigPath configures where the rendered HAProxy config is written.
@@ -51,6 +53,8 @@ const (
 	DefaultIPPool = "203.0.113.10,203.0.113.11,203.0.113.12"
 	// DefaultRequeueAfter is the default reconciliation requeue interval for matching Services.
 	DefaultRequeueAfter = 30 * time.Second
+	// DefaultGracefulShutdownTimeout is the default maximum graceful shutdown time for the controller manager.
+	DefaultGracefulShutdownTimeout = 15 * time.Second
 	// DefaultLogLevel is the default structured log level.
 	DefaultLogLevel = LogLevelInfo
 	// DefaultHAProxyConfigPath is the default path for the rendered HAProxy config file.
@@ -81,16 +85,17 @@ var supportedLogLevels = map[string]struct{}{
 
 // Config contains runtime configuration loaded from environment variables.
 type Config struct {
-	MetricsAddr            string
-	HealthAddr             string
-	LeaderElect            bool
-	LoadBalancerClass      string
-	IPPool                 []netip.Addr
-	RequeueAfter           time.Duration
-	LogLevel               string
-	HAProxyConfigPath      string
-	HAProxyValidateCommand string
-	HAProxyReloadCommand   string
+	MetricsAddr             string
+	HealthAddr              string
+	LeaderElect             bool
+	LoadBalancerClass       string
+	IPPool                  []netip.Addr
+	RequeueAfter            time.Duration
+	GracefulShutdownTimeout time.Duration
+	LogLevel                string
+	HAProxyConfigPath       string
+	HAProxyValidateCommand  string
+	HAProxyReloadCommand    string
 }
 
 // LoadDotEnv loads variables from .env without overriding the existing environment.
@@ -143,6 +148,15 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("%s must be greater than zero", EnvRequeueAfter)
 	}
 	cfg.RequeueAfter = requeueAfter
+
+	gracefulShutdownTimeout, err := durationEnv(EnvGracefulShutdownTimeout, DefaultGracefulShutdownTimeout)
+	if err != nil {
+		return Config{}, err
+	}
+	if gracefulShutdownTimeout <= 0 {
+		return Config{}, fmt.Errorf("%s must be greater than zero", EnvGracefulShutdownTimeout)
+	}
+	cfg.GracefulShutdownTimeout = gracefulShutdownTimeout
 
 	if cfg.LoadBalancerClass == "" {
 		return Config{}, fmt.Errorf("%s must not be empty", EnvLoadBalancerClass)

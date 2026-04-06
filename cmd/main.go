@@ -17,12 +17,18 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"sort"
+	"strings"
+	"sync/atomic"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
+	"k8s.io/client-go/tools/clientcmd"
 
 	"go.uber.org/zap/zapcore"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -44,6 +50,26 @@ var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
 )
+
+type kubeconfigDiagnosticKind string
+
+const (
+	kubeconfigDiagnosticMissingCurrentContext kubeconfigDiagnosticKind = "missingCurrentContext"
+	kubeconfigDiagnosticNoKubeconfig          kubeconfigDiagnosticKind = "noKubeconfig"
+)
+
+type kubeconfigDiagnostic struct {
+	kind              kubeconfigDiagnosticKind
+	kubeconfigPath    string
+	availableContexts []string
+	checkedSources    []string
+	suggestedCommand  string
+}
+
+type gracefulShutdownObserver struct {
+	timeout time.Duration
+	started atomic.Bool
+}
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
@@ -69,7 +95,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	setupLog.Info("startup beginning")
 	logDotEnvStatus(dotEnvLoaded)
+
+	if !likelyInClusterEnvironment() {
+		diagnostic, err := diagnoseLocalKubeconfig(os.Args[1:])
+		if err != nil {
+			setupLog.Error(err, "unable to inspect local kubeconfig")
+			os.Exit(1)
+		}
+		if diagnostic != nil {
+			logPreflightKubeconfigDiagnostic(diagnostic)
+			os.Exit(1)
+		}
+	}
 
 	restConfig, err := ctrl.GetConfig()
 	if err != nil {
@@ -78,11 +117,12 @@ func main() {
 	}
 
 	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
-		Scheme:                 scheme,
-		Metrics:                metricsserver.Options{BindAddress: cfg.MetricsAddr},
-		HealthProbeBindAddress: cfg.HealthAddr,
-		LeaderElection:         cfg.LeaderElect,
-		LeaderElectionID:       "ed30ec16.diploma.local",
+		Scheme:                  scheme,
+		Metrics:                 metricsserver.Options{BindAddress: cfg.MetricsAddr},
+		HealthProbeBindAddress:  cfg.HealthAddr,
+		LeaderElection:          cfg.LeaderElect,
+		LeaderElectionID:        "ed30ec16.diploma.local",
+		GracefulShutdownTimeout: &cfg.GracefulShutdownTimeout,
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
@@ -115,10 +155,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	setupLog.Info("starting manager",
+	setupLog.Info("manager configuration",
 		"metricsAddr", cfg.MetricsAddr,
 		"healthAddr", cfg.HealthAddr,
 		"leaderElection", cfg.LeaderElect,
+		"gracefulShutdownTimeout", cfg.GracefulShutdownTimeout.String(),
 		"loadBalancerClass", cfg.LoadBalancerClass,
 		"requeueAfter", cfg.RequeueAfter.String(),
 		"logLevel", cfg.LogLevel,
@@ -126,10 +167,43 @@ func main() {
 		"haproxyValidateEnabled", cfg.HAProxyValidateCommand != "",
 		"haproxyReloadEnabled", cfg.HAProxyReloadCommand != "",
 	)
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
-		setupLog.Error(err, "problem running manager")
+
+	shutdownCtx := ctrl.SetupSignalHandler()
+	shutdownObserver := observeGracefulShutdown(shutdownCtx, cfg.GracefulShutdownTimeout)
+
+	if err := mgr.Start(shutdownCtx); err != nil {
+		if shutdownCtx.Err() != nil {
+			shutdownObserver.logStarted()
+			setupLog.Error(err, "graceful shutdown failed")
+		} else {
+			setupLog.Error(err, "problem running manager")
+		}
 		os.Exit(1)
 	}
+
+	if shutdownCtx.Err() != nil {
+		shutdownObserver.logStarted()
+		setupLog.Info("graceful shutdown completed")
+	}
+}
+
+func observeGracefulShutdown(ctx context.Context, timeout time.Duration) *gracefulShutdownObserver {
+	observer := &gracefulShutdownObserver{timeout: timeout}
+	go func() {
+		<-ctx.Done()
+		observer.logStarted()
+	}()
+
+	return observer
+}
+
+func (o *gracefulShutdownObserver) logStarted() {
+	if !o.started.CompareAndSwap(false, true) {
+		return
+	}
+
+	setupLog.Info("shutdown signal received")
+	setupLog.Info("graceful shutdown started", "timeout", o.timeout.String())
 }
 
 func logDotEnvStatus(dotEnvLoaded bool) {
@@ -170,4 +244,108 @@ func parseLogLevel(levelName string) (zapcore.Level, error) {
 	default:
 		return zapcore.InfoLevel, fmt.Errorf("unsupported log level %q", levelName)
 	}
+}
+
+func logPreflightKubeconfigDiagnostic(diagnostic *kubeconfigDiagnostic) {
+	switch diagnostic.kind {
+	case kubeconfigDiagnosticMissingCurrentContext:
+		fields := []any{
+			"kubeconfigPath", diagnostic.kubeconfigPath,
+			"availableContexts", diagnostic.availableContexts,
+		}
+		if diagnostic.suggestedCommand != "" {
+			fields = append(fields, "suggestedCommand", diagnostic.suggestedCommand)
+		}
+
+		setupLog.Info("kubeconfig found, but current-context is not set", fields...)
+	case kubeconfigDiagnosticNoKubeconfig:
+		setupLog.Info("no kubeconfig found for local run", "checkedSources", diagnostic.checkedSources)
+	}
+}
+
+func diagnoseLocalKubeconfig(args []string) (*kubeconfigDiagnostic, error) {
+	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+	if explicitPath := kubeconfigFlagValue(args); explicitPath != "" {
+		loadingRules.ExplicitPath = explicitPath
+	}
+
+	checkedSources := loadingRules.GetLoadingPrecedence()
+	existingSources := existingKubeconfigPaths(checkedSources)
+	if len(existingSources) == 0 {
+		return &kubeconfigDiagnostic{
+			kind:           kubeconfigDiagnosticNoKubeconfig,
+			checkedSources: checkedSources,
+		}, nil
+	}
+
+	rawConfig, err := loadingRules.Load()
+	if err != nil {
+		return nil, err
+	}
+
+	if rawConfig.CurrentContext != "" || len(rawConfig.Contexts) == 0 {
+		return nil, nil
+	}
+
+	availableContexts := make([]string, 0, len(rawConfig.Contexts))
+	for name := range rawConfig.Contexts {
+		availableContexts = append(availableContexts, name)
+	}
+	sort.Strings(availableContexts)
+
+	if len(availableContexts) == 0 {
+		return nil, nil
+	}
+
+	return &kubeconfigDiagnostic{
+		kind:              kubeconfigDiagnosticMissingCurrentContext,
+		kubeconfigPath:    existingSources[0],
+		availableContexts: availableContexts,
+		checkedSources:    checkedSources,
+		suggestedCommand:  fmt.Sprintf("kubectl config use-context %s", availableContexts[0]),
+	}, nil
+}
+
+func kubeconfigFlagValue(args []string) string {
+	for index := range len(args) {
+		arg := strings.TrimSpace(args[index])
+		switch {
+		case strings.HasPrefix(arg, "--kubeconfig="):
+			return strings.TrimSpace(strings.TrimPrefix(arg, "--kubeconfig="))
+		case strings.HasPrefix(arg, "-kubeconfig="):
+			return strings.TrimSpace(strings.TrimPrefix(arg, "-kubeconfig="))
+		case arg == "--kubeconfig" || arg == "-kubeconfig":
+			if index+1 >= len(args) {
+				return ""
+			}
+
+			return strings.TrimSpace(args[index+1])
+		}
+	}
+
+	return ""
+}
+
+func existingKubeconfigPaths(paths []string) []string {
+	existing := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+
+		info, err := os.Stat(path)
+		if err != nil || info.IsDir() {
+			continue
+		}
+
+		existing = append(existing, path)
+	}
+
+	return existing
+}
+
+func likelyInClusterEnvironment() bool {
+	_, hasServiceHost := os.LookupEnv("KUBERNETES_SERVICE_HOST")
+	_, hasServicePort := os.LookupEnv("KUBERNETES_SERVICE_PORT")
+	return hasServiceHost && hasServicePort
 }

@@ -46,6 +46,10 @@ func TestLoadDefaults(t *testing.T) {
 		t.Fatalf("RequeueAfter = %s, want %s", cfg.RequeueAfter, DefaultRequeueAfter)
 	}
 
+	if cfg.GracefulShutdownTimeout != DefaultGracefulShutdownTimeout {
+		t.Fatalf("GracefulShutdownTimeout = %s, want %s", cfg.GracefulShutdownTimeout, DefaultGracefulShutdownTimeout)
+	}
+
 	if cfg.LogLevel != DefaultLogLevel {
 		t.Fatalf("LogLevel = %q, want %q", cfg.LogLevel, DefaultLogLevel)
 	}
@@ -72,6 +76,7 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv(EnvLoadBalancerClass, "example.local/lb")
 	t.Setenv(EnvIPPool, "203.0.113.20, 203.0.113.21 , ,203.0.113.22")
 	t.Setenv(EnvRequeueAfter, "45s")
+	t.Setenv(EnvGracefulShutdownTimeout, "20s")
 	t.Setenv(EnvLogLevel, "DEBUG")
 	t.Setenv(EnvHAProxyConfigPath, "/var/run/haproxy/controller.cfg")
 	t.Setenv(EnvHAProxyValidateCommand, "haproxy -c -f {{config}}")
@@ -111,6 +116,10 @@ func TestLoadOverrides(t *testing.T) {
 		t.Fatalf("RequeueAfter = %s, want %s", cfg.RequeueAfter, 45*time.Second)
 	}
 
+	if cfg.GracefulShutdownTimeout != 20*time.Second {
+		t.Fatalf("GracefulShutdownTimeout = %s, want %s", cfg.GracefulShutdownTimeout, 20*time.Second)
+	}
+
 	if cfg.LogLevel != LogLevelDebug {
 		t.Fatalf("LogLevel = %q, want %q", cfg.LogLevel, LogLevelDebug)
 	}
@@ -132,6 +141,24 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 	setConfigEnvToEmpty(t)
 
 	t.Setenv(EnvLeaderElect, "not-a-bool")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() error = nil, want non-nil")
+	}
+}
+
+func TestLoadRejectsInvalidGracefulShutdownTimeout(t *testing.T) {
+	setConfigEnvToEmpty(t)
+	t.Setenv(EnvGracefulShutdownTimeout, "not-a-duration")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() error = nil, want non-nil")
+	}
+}
+
+func TestLoadRejectsNonPositiveGracefulShutdownTimeout(t *testing.T) {
+	setConfigEnvToEmpty(t)
+	t.Setenv(EnvGracefulShutdownTimeout, "0s")
 
 	if _, err := Load(); err == nil {
 		t.Fatal("Load() error = nil, want non-nil")
@@ -237,6 +264,7 @@ func setConfigEnvToEmpty(t *testing.T) {
 	t.Setenv(EnvLoadBalancerClass, "")
 	t.Setenv(EnvIPPool, "")
 	t.Setenv(EnvRequeueAfter, "")
+	t.Setenv(EnvGracefulShutdownTimeout, "")
 	t.Setenv(EnvLogLevel, "")
 	t.Setenv(EnvHAProxyConfigPath, "")
 	t.Setenv(EnvHAProxyValidateCommand, "")
@@ -253,6 +281,7 @@ func unsetConfigEnv(t *testing.T) {
 		EnvLoadBalancerClass,
 		EnvIPPool,
 		EnvRequeueAfter,
+		EnvGracefulShutdownTimeout,
 		EnvLogLevel,
 		EnvHAProxyConfigPath,
 		EnvHAProxyValidateCommand,
