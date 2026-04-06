@@ -4,9 +4,13 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
+	"strings"
 	"testing"
 	"time"
+
+	"sigs.k8s.io/yaml"
 )
 
 func TestLoadDefaults(t *testing.T) {
@@ -255,6 +259,64 @@ func TestLoadDotEnvLoadsFileWithoutOverridingEnvironment(t *testing.T) {
 	}
 }
 
+func TestManagerManifestGracefulShutdownConfiguration(t *testing.T) {
+	manifestPath := repoPath(t, "config", "manager", "manager.yaml")
+	content, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", manifestPath, err)
+	}
+
+	deploymentDoc, ok := findYAMLDocumentByKind(string(content), "Deployment")
+	if !ok {
+		t.Fatalf("deployment document not found in %s", manifestPath)
+	}
+
+	var deployment struct {
+		Spec struct {
+			Template struct {
+				Spec struct {
+					TerminationGracePeriodSeconds *int64 `yaml:"terminationGracePeriodSeconds"`
+					Containers                    []struct {
+						Env []struct {
+							Name  string `yaml:"name"`
+							Value string `yaml:"value"`
+						} `yaml:"env"`
+					} `yaml:"containers"`
+				} `yaml:"spec"`
+			} `yaml:"template"`
+		} `yaml:"spec"`
+	}
+	if err := yaml.Unmarshal([]byte(deploymentDoc), &deployment); err != nil {
+		t.Fatalf("yaml.Unmarshal() error = %v", err)
+	}
+
+	if deployment.Spec.Template.Spec.TerminationGracePeriodSeconds == nil {
+		t.Fatal("terminationGracePeriodSeconds = nil, want explicit value")
+	}
+
+	shutdownEnv, ok := findEnvValue(deployment.Spec.Template.Spec.Containers, EnvGracefulShutdownTimeout)
+	if !ok {
+		t.Fatalf("env %s not found in manager manifest", EnvGracefulShutdownTimeout)
+	}
+
+	shutdownTimeout, err := time.ParseDuration(shutdownEnv)
+	if err != nil {
+		t.Fatalf("ParseDuration(%q) error = %v", shutdownEnv, err)
+	}
+
+	if shutdownTimeout != DefaultGracefulShutdownTimeout {
+		t.Fatalf("shutdown timeout = %s, want %s", shutdownTimeout, DefaultGracefulShutdownTimeout)
+	}
+
+	if *deployment.Spec.Template.Spec.TerminationGracePeriodSeconds < int64(shutdownTimeout.Seconds()) {
+		t.Fatalf(
+			"terminationGracePeriodSeconds = %d, want >= %d",
+			*deployment.Spec.Template.Spec.TerminationGracePeriodSeconds,
+			int64(shutdownTimeout.Seconds()),
+		)
+	}
+}
+
 func setConfigEnvToEmpty(t *testing.T) {
 	t.Helper()
 
@@ -329,4 +391,44 @@ func chdir(t *testing.T, dir string) {
 	t.Cleanup(func() {
 		_ = os.Chdir(wd)
 	})
+}
+
+func repoPath(t *testing.T, pathElements ...string) string {
+	t.Helper()
+
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller() failed")
+	}
+
+	elements := []string{filepath.Dir(file), "..", ".."}
+	elements = append(elements, pathElements...)
+	return filepath.Clean(filepath.Join(elements...))
+}
+
+func findYAMLDocumentByKind(content, kind string) (string, bool) {
+	for doc := range strings.SplitSeq(content, "\n---\n") {
+		if strings.Contains(doc, "\nkind: "+kind+"\n") || strings.HasPrefix(doc, "kind: "+kind+"\n") {
+			return doc, true
+		}
+	}
+
+	return "", false
+}
+
+func findEnvValue(containers []struct {
+	Env []struct {
+		Name  string `yaml:"name"`
+		Value string `yaml:"value"`
+	} `yaml:"env"`
+}, envName string) (string, bool) {
+	for _, container := range containers {
+		for _, envVar := range container.Env {
+			if envVar.Name == envName {
+				return envVar.Value, true
+			}
+		}
+	}
+
+	return "", false
 }

@@ -13,24 +13,26 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
+const testLoadBalancerIP = "203.0.113.10"
+
 func TestDesiredLoadBalancerIngress(t *testing.T) {
-	desired := DesiredLoadBalancerIngress("203.0.113.10")
+	desired := DesiredLoadBalancerIngress(testLoadBalancerIP)
 
 	if len(desired) != 1 {
 		t.Fatalf("DesiredLoadBalancerIngress() len = %d, want 1", len(desired))
 	}
 
-	if desired[0].IP != "203.0.113.10" {
-		t.Fatalf("DesiredLoadBalancerIngress() IP = %q, want %q", desired[0].IP, "203.0.113.10")
+	if desired[0].IP != testLoadBalancerIP {
+		t.Fatalf("DesiredLoadBalancerIngress() IP = %q, want %q", desired[0].IP, testLoadBalancerIP)
 	}
 }
 
 func TestLoadBalancerIngressEqual(t *testing.T) {
-	current := []corev1.LoadBalancerIngress{{IP: "203.0.113.10"}}
-	same := []corev1.LoadBalancerIngress{{IP: "203.0.113.10"}}
+	current := []corev1.LoadBalancerIngress{{IP: testLoadBalancerIP}}
+	same := []corev1.LoadBalancerIngress{{IP: testLoadBalancerIP}}
 	other := []corev1.LoadBalancerIngress{{IP: "203.0.113.11"}}
 	ipMode := corev1.LoadBalancerIPModeVIP
-	withIPMode := []corev1.LoadBalancerIngress{{IP: "203.0.113.10", IPMode: &ipMode}}
+	withIPMode := []corev1.LoadBalancerIngress{{IP: testLoadBalancerIP, IPMode: &ipMode}}
 
 	if !LoadBalancerIngressEqual(current, same) {
 		t.Fatal("LoadBalancerIngressEqual() = false, want true")
@@ -63,7 +65,7 @@ func TestUpdateServiceLoadBalancerStatus(t *testing.T) {
 			context.Background(),
 			k8sClient,
 			service,
-			DesiredLoadBalancerIngress("203.0.113.10"),
+			DesiredLoadBalancerIngress(testLoadBalancerIP),
 		)
 		if err != nil {
 			t.Fatalf("UpdateServiceLoadBalancerStatus() error = %v", err)
@@ -78,13 +80,13 @@ func TestUpdateServiceLoadBalancerStatus(t *testing.T) {
 			t.Fatalf("Get() error = %v", err)
 		}
 
-		if len(stored.Status.LoadBalancer.Ingress) != 1 || stored.Status.LoadBalancer.Ingress[0].IP != "203.0.113.10" {
-			t.Fatalf("stored status ingress = %+v, want IP 203.0.113.10", stored.Status.LoadBalancer.Ingress)
+		if len(stored.Status.LoadBalancer.Ingress) != 1 || stored.Status.LoadBalancer.Ingress[0].IP != testLoadBalancerIP {
+			t.Fatalf("stored status ingress = %+v, want IP %s", stored.Status.LoadBalancer.Ingress, testLoadBalancerIP)
 		}
 	})
 
 	t.Run("skips update when status is already desired", func(t *testing.T) {
-		service := newStatusService("203.0.113.10")
+		service := newStatusService(testLoadBalancerIP)
 		k8sClient := fake.NewClientBuilder().
 			WithScheme(scheme).
 			WithStatusSubresource(&corev1.Service{}).
@@ -95,7 +97,7 @@ func TestUpdateServiceLoadBalancerStatus(t *testing.T) {
 			context.Background(),
 			k8sClient,
 			service,
-			DesiredLoadBalancerIngress("203.0.113.10"),
+			DesiredLoadBalancerIngress(testLoadBalancerIP),
 		)
 		if err != nil {
 			t.Fatalf("UpdateServiceLoadBalancerStatus() error = %v", err)
@@ -109,7 +111,7 @@ func TestUpdateServiceLoadBalancerStatus(t *testing.T) {
 	t.Run("skips update when status has same IP with IPMode", func(t *testing.T) {
 		ipMode := corev1.LoadBalancerIPModeVIP
 		service := newStatusServiceWithIngress(corev1.LoadBalancerIngress{
-			IP:     "203.0.113.10",
+			IP:     testLoadBalancerIP,
 			IPMode: &ipMode,
 		})
 		k8sClient := fake.NewClientBuilder().
@@ -122,7 +124,7 @@ func TestUpdateServiceLoadBalancerStatus(t *testing.T) {
 			context.Background(),
 			k8sClient,
 			service,
-			DesiredLoadBalancerIngress("203.0.113.10"),
+			DesiredLoadBalancerIngress(testLoadBalancerIP),
 		)
 		if err != nil {
 			t.Fatalf("UpdateServiceLoadBalancerStatus() error = %v", err)
@@ -141,12 +143,84 @@ func TestUpdateServiceLoadBalancerStatus(t *testing.T) {
 			t.Fatalf("stored status ingress = %+v, want preserved IPMode", stored.Status.LoadBalancer.Ingress)
 		}
 	})
+
+	t.Run("rewrites status when stale ingress entries are present", func(t *testing.T) {
+		service := newStatusServiceWithIngress(
+			corev1.LoadBalancerIngress{IP: testLoadBalancerIP},
+			corev1.LoadBalancerIngress{IP: "203.0.113.11"},
+		)
+		k8sClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithStatusSubresource(&corev1.Service{}).
+			WithObjects(service).
+			Build()
+
+		updated, err := UpdateServiceLoadBalancerStatus(
+			context.Background(),
+			k8sClient,
+			service,
+			DesiredLoadBalancerIngress(testLoadBalancerIP),
+		)
+		if err != nil {
+			t.Fatalf("UpdateServiceLoadBalancerStatus() error = %v", err)
+		}
+
+		if !updated {
+			t.Fatal("UpdateServiceLoadBalancerStatus() updated = false, want true")
+		}
+
+		stored := &corev1.Service{}
+		if err := k8sClient.Get(context.Background(), clientObjectKey(service), stored); err != nil {
+			t.Fatalf("Get() error = %v", err)
+		}
+
+		if len(stored.Status.LoadBalancer.Ingress) != 1 || stored.Status.LoadBalancer.Ingress[0].IP != testLoadBalancerIP {
+			t.Fatalf("stored status ingress = %+v, want only IP %s", stored.Status.LoadBalancer.Ingress, testLoadBalancerIP)
+		}
+	})
+
+	t.Run("clears status when desired ingress is empty and remains stable", func(t *testing.T) {
+		service := newStatusService(testLoadBalancerIP)
+		k8sClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithStatusSubresource(&corev1.Service{}).
+			WithObjects(service).
+			Build()
+
+		updated, err := UpdateServiceLoadBalancerStatus(
+			context.Background(),
+			k8sClient,
+			service,
+			nil,
+		)
+		if err != nil {
+			t.Fatalf("first UpdateServiceLoadBalancerStatus() error = %v", err)
+		}
+
+		if !updated {
+			t.Fatal("first UpdateServiceLoadBalancerStatus() updated = false, want true")
+		}
+
+		updated, err = UpdateServiceLoadBalancerStatus(
+			context.Background(),
+			k8sClient,
+			service,
+			nil,
+		)
+		if err != nil {
+			t.Fatalf("second UpdateServiceLoadBalancerStatus() error = %v", err)
+		}
+
+		if updated {
+			t.Fatal("second UpdateServiceLoadBalancerStatus() updated = true, want false")
+		}
+	})
 }
 
 func TestHasLoadBalancerIngressIPInPool(t *testing.T) {
-	service := newStatusService("203.0.113.10")
+	service := newStatusService(testLoadBalancerIP)
 	pool := []netip.Addr{
-		netip.MustParseAddr("203.0.113.10"),
+		netip.MustParseAddr(testLoadBalancerIP),
 		netip.MustParseAddr("203.0.113.11"),
 	}
 
@@ -169,7 +243,7 @@ func newStatusService(ingressIP string) *corev1.Service {
 	return service
 }
 
-func newStatusServiceWithIngress(ingress corev1.LoadBalancerIngress) *corev1.Service {
+func newStatusServiceWithIngress(ingresses ...corev1.LoadBalancerIngress) *corev1.Service {
 	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "demo",
@@ -177,8 +251,17 @@ func newStatusServiceWithIngress(ingress corev1.LoadBalancerIngress) *corev1.Ser
 		},
 	}
 
-	if ingress.IP != "" || ingress.Hostname != "" || ingress.IPMode != nil || len(ingress.Ports) > 0 {
-		service.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{ingress}
+	nonEmptyIngresses := make([]corev1.LoadBalancerIngress, 0, len(ingresses))
+	for _, ingress := range ingresses {
+		if ingress.IP == "" && ingress.Hostname == "" && ingress.IPMode == nil && len(ingress.Ports) == 0 {
+			continue
+		}
+
+		nonEmptyIngresses = append(nonEmptyIngresses, ingress)
+	}
+
+	if len(nonEmptyIngresses) > 0 {
+		service.Status.LoadBalancer.Ingress = nonEmptyIngresses
 	}
 
 	return service

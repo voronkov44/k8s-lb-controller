@@ -13,6 +13,8 @@ import (
 	"github.com/f1lzz/k8s-lb-controller/internal/provider"
 )
 
+const testHTTPPortName = "http"
+
 func TestDiscoverFiltersAndSortsIPv4ReadyBackends(t *testing.T) {
 	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
@@ -22,7 +24,7 @@ func TestDiscoverFiltersAndSortsIPv4ReadyBackends(t *testing.T) {
 		Spec: corev1.ServiceSpec{
 			Ports: []corev1.ServicePort{
 				{
-					Name:       "http",
+					Name:       testHTTPPortName,
 					Protocol:   corev1.ProtocolTCP,
 					Port:       80,
 					TargetPort: intstr.FromInt32(8080),
@@ -33,7 +35,7 @@ func TestDiscoverFiltersAndSortsIPv4ReadyBackends(t *testing.T) {
 
 	ready := true
 	notReady := false
-	httpName := "http"
+	httpName := testHTTPPortName
 	otherService := "other"
 
 	slicesToDiscover := []discoveryv1.EndpointSlice{
@@ -134,7 +136,7 @@ func TestDiscoverMatchesPortsByNameAndTargetPort(t *testing.T) {
 		Spec: corev1.ServiceSpec{
 			Ports: []corev1.ServicePort{
 				{
-					Name:       "http",
+					Name:       testHTTPPortName,
 					Protocol:   corev1.ProtocolTCP,
 					Port:       80,
 					TargetPort: intstr.FromString("web"),
@@ -193,7 +195,7 @@ func TestDiscoverIgnoresOtherNamespacesAndDeduplicatesBackends(t *testing.T) {
 		Spec: corev1.ServiceSpec{
 			Ports: []corev1.ServicePort{
 				{
-					Name:       "http",
+					Name:       testHTTPPortName,
 					Protocol:   corev1.ProtocolTCP,
 					Port:       80,
 					TargetPort: intstr.FromInt32(8080),
@@ -202,7 +204,7 @@ func TestDiscoverIgnoresOtherNamespacesAndDeduplicatesBackends(t *testing.T) {
 		},
 	}
 
-	httpName := "http"
+	httpName := testHTTPPortName
 
 	discovered := Discover(service, []discoveryv1.EndpointSlice{
 		{
@@ -273,7 +275,7 @@ func TestDiscoverReturnsEmptyBackendsWhenNoMatchingEndpointSlicesExist(t *testin
 		Spec: corev1.ServiceSpec{
 			Ports: []corev1.ServicePort{
 				{
-					Name:       "http",
+					Name:       testHTTPPortName,
 					Protocol:   corev1.ProtocolTCP,
 					Port:       80,
 					TargetPort: intstr.FromInt32(8080),
@@ -289,5 +291,59 @@ func TestDiscoverReturnsEmptyBackendsWhenNoMatchingEndpointSlicesExist(t *testin
 
 	if len(discovered[0].Backends) != 0 {
 		t.Fatalf("Discover() backends = %+v, want empty slice", discovered[0].Backends)
+	}
+}
+
+func TestDiscoverTreatsNilReadyConditionAsReadyAndIgnoresServingCondition(t *testing.T) {
+	service := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "default",
+		},
+		Spec: corev1.ServiceSpec{
+			Ports: []corev1.ServicePort{
+				{
+					Name:       testHTTPPortName,
+					Protocol:   corev1.ProtocolTCP,
+					Port:       80,
+					TargetPort: intstr.FromInt32(8080),
+				},
+			},
+		},
+	}
+
+	httpName := testHTTPPortName
+	serving := false
+
+	discovered := Discover(service, []discoveryv1.EndpointSlice{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "demo",
+				Namespace: "default",
+				Labels: map[string]string{
+					discoveryv1.LabelServiceName: service.Name,
+				},
+			},
+			Ports: []discoveryv1.EndpointPort{
+				{Name: &httpName, Port: ptr.To[int32](8080), Protocol: ptr.To(corev1.ProtocolTCP)},
+			},
+			Endpoints: []discoveryv1.Endpoint{
+				{
+					Addresses: []string{"10.0.0.4"},
+					Conditions: discoveryv1.EndpointConditions{
+						Serving: &serving,
+					},
+				},
+			},
+		},
+	})
+
+	want := []provider.BackendEndpoint{{Address: "10.0.0.4", Port: 8080}}
+	if len(discovered) != 1 {
+		t.Fatalf("Discover() len = %d, want 1", len(discovered))
+	}
+
+	if !slices.Equal(discovered[0].Backends, want) {
+		t.Fatalf("Discover() backends = %+v, want %+v", discovered[0].Backends, want)
 	}
 }

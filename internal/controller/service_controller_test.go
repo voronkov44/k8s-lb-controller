@@ -189,6 +189,10 @@ func TestServiceReconcilerReconcileDoesNotRewriteStatusOnSecondPass(t *testing.T
 	if len(fakeProvider.ensureCalls) != 2 {
 		t.Fatalf("provider ensure calls = %d, want 2", len(fakeProvider.ensureCalls))
 	}
+
+	if fakeProvider.ensureChangedCount != 1 {
+		t.Fatalf("provider changed ensure count = %d, want 1", fakeProvider.ensureChangedCount)
+	}
 }
 
 func TestServiceReconcilerReconcileDiscoversEndpointSliceBackends(t *testing.T) {
@@ -196,18 +200,10 @@ func TestServiceReconcilerReconcileDiscoversEndpointSliceBackends(t *testing.T) 
 	service := newReconcileService("demo", "default", corev1.ServiceTypeLoadBalancer, &class)
 	endpointSlice := newEndpointSlice(
 		"demo-1",
-		"default",
-		"demo",
-		"http",
-		8080,
 		[]endpointAddress{{ip: "10.0.0.2", ready: true}, {ip: "10.0.0.1", ready: true}, {ip: "2001:db8::1", ready: true}},
 	)
 	notReadySlice := newEndpointSlice(
 		"demo-2",
-		"default",
-		"demo",
-		"http",
-		8080,
 		[]endpointAddress{{ip: "10.0.0.3", ready: false}},
 	)
 
@@ -248,10 +244,6 @@ func TestServiceReconcilerReconcileUpdatesProviderStateWhenEndpointSliceChanges(
 	service := newReconcileService("demo", "default", corev1.ServiceTypeLoadBalancer, &class)
 	endpointSlice := newEndpointSlice(
 		"demo-1",
-		"default",
-		"demo",
-		"http",
-		8080,
 		[]endpointAddress{{ip: "10.0.0.1", ready: true}},
 	)
 
@@ -291,6 +283,43 @@ func TestServiceReconcilerReconcileUpdatesProviderStateWhenEndpointSliceChanges(
 
 	if lastEnsure.Ports[0].Backends[0] != (provider.BackendEndpoint{Address: "10.0.0.5", Port: 8080}) {
 		t.Fatalf("last ensure backend = %+v, want 10.0.0.5:8080", lastEnsure.Ports[0].Backends[0])
+	}
+}
+
+func TestServiceReconcilerReconcileRemovesBackendsWhenEndpointSlicesDisappear(t *testing.T) {
+	class := managedServiceClass
+	service := newReconcileService("demo", "default", corev1.ServiceTypeLoadBalancer, &class)
+	endpointSlice := newEndpointSlice(
+		"demo-1",
+		[]endpointAddress{{ip: "10.0.0.1", ready: true}},
+	)
+
+	reconciler, countingClient, fakeProvider := newTestServiceReconciler(t, nil, service, endpointSlice)
+	request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "demo"}}
+
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("first Reconcile() error = %v", err)
+	}
+
+	if err := countingClient.Delete(context.Background(), endpointSlice); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatalf("second Reconcile() error = %v", err)
+	}
+
+	if len(fakeProvider.ensureCalls) != 2 {
+		t.Fatalf("provider ensure calls = %d, want 2", len(fakeProvider.ensureCalls))
+	}
+
+	lastEnsure := fakeProvider.ensureCalls[len(fakeProvider.ensureCalls)-1]
+	if len(lastEnsure.Ports) != 1 {
+		t.Fatalf("last ensure ports len = %d, want 1", len(lastEnsure.Ports))
+	}
+
+	if len(lastEnsure.Ports[0].Backends) != 0 {
+		t.Fatalf("last ensure backends = %+v, want empty slice", lastEnsure.Ports[0].Backends)
 	}
 }
 
@@ -417,6 +446,81 @@ func TestServiceReconcilerReconcileCleansUpServiceThatNoLongerMatchesController(
 	}
 }
 
+func TestServiceReconcilerReconcileCleansUpServiceThatStopsMatchingByTypeOrClass(t *testing.T) {
+	otherClass := "diploma.local/other"
+
+	tests := []struct {
+		name       string
+		mutateSpec func(*corev1.Service)
+	}{
+		{
+			name: "nodeport",
+			mutateSpec: func(service *corev1.Service) {
+				service.Spec.Type = corev1.ServiceTypeNodePort
+			},
+		},
+		{
+			name: "nil load balancer class",
+			mutateSpec: func(service *corev1.Service) {
+				service.Spec.LoadBalancerClass = nil
+			},
+		},
+		{
+			name: "different load balancer class",
+			mutateSpec: func(service *corev1.Service) {
+				service.Spec.LoadBalancerClass = &otherClass
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			class := managedServiceClass
+			service := newReconcileServiceWithStatus("demo", &class, "203.0.113.10")
+			service.Finalizers = []string{serviceFinalizer}
+			tt.mutateSpec(service)
+
+			fakeProvider := newFakeProvider()
+			if _, err := fakeProvider.Ensure(context.Background(), provider.Service{
+				Namespace:         "default",
+				Name:              "demo",
+				LoadBalancerClass: class,
+				ExternalIP:        "203.0.113.10",
+			}); err != nil {
+				t.Fatalf("Ensure() seed error = %v", err)
+			}
+
+			reconciler, countingClient, _ := newTestServiceReconciler(t, fakeProvider, service)
+			request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "demo"}}
+
+			if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+				t.Fatalf("first Reconcile() error = %v", err)
+			}
+
+			stored := getStoredService(t, countingClient, request.NamespacedName)
+			if hasServiceFinalizer(stored) {
+				t.Fatalf("service finalizers = %v, want no finalizer", stored.Finalizers)
+			}
+
+			if len(stored.Status.LoadBalancer.Ingress) != 0 {
+				t.Fatalf("service status ingress = %+v, want empty ingress", stored.Status.LoadBalancer.Ingress)
+			}
+
+			if _, ok := fakeProvider.Get(provider.ServiceRef{Namespace: "default", Name: "demo"}); ok {
+				t.Fatal("provider state still present after cleanup")
+			}
+
+			if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+				t.Fatalf("second Reconcile() error = %v", err)
+			}
+
+			if len(fakeProvider.deleteCalls) != 1 {
+				t.Fatalf("provider delete calls = %d, want 1", len(fakeProvider.deleteCalls))
+			}
+		})
+	}
+}
+
 func TestServiceReconcilerReconcileDeletesManagedService(t *testing.T) {
 	class := managedServiceClass
 	now := metav1.NewTime(time.Now())
@@ -480,6 +584,30 @@ func TestServiceReconcilerReconcileProviderEnsureErrorReturnsError(t *testing.T)
 
 	if len(stored.Status.LoadBalancer.Ingress) != 0 {
 		t.Fatalf("service status ingress = %+v, want empty ingress after provider failure", stored.Status.LoadBalancer.Ingress)
+	}
+}
+
+func TestServiceReconcilerReconcileProviderEnsureErrorDoesNotPublishNewStatus(t *testing.T) {
+	class := managedServiceClass
+	service := newReconcileServiceWithStatus("demo", &class, "198.51.100.20")
+	fakeProvider := newFakeProvider()
+	fakeProvider.ensureErr = errors.New("provider ensure failed")
+
+	reconciler, countingClient, _ := newTestServiceReconciler(t, fakeProvider, service)
+
+	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "default", Name: "demo"},
+	}); err == nil {
+		t.Fatal("Reconcile() error = nil, want non-nil")
+	}
+
+	stored := getStoredService(t, countingClient, types.NamespacedName{Namespace: "default", Name: "demo"})
+	if len(stored.Status.LoadBalancer.Ingress) != 1 || stored.Status.LoadBalancer.Ingress[0].IP != "198.51.100.20" {
+		t.Fatalf("service status ingress = %+v, want preserved IP 198.51.100.20", stored.Status.LoadBalancer.Ingress)
+	}
+
+	if countingClient.statusUpdates != 0 {
+		t.Fatalf("status update count = %d, want 0", countingClient.statusUpdates)
 	}
 }
 
@@ -655,11 +783,7 @@ type endpointAddress struct {
 	ready bool
 }
 
-func newEndpointSlice(
-	name, namespace, serviceName, portName string,
-	port int32,
-	addresses []endpointAddress,
-) *discoveryv1.EndpointSlice {
+func newEndpointSlice(name string, addresses []endpointAddress) *discoveryv1.EndpointSlice {
 	endpoints := make([]discoveryv1.Endpoint, 0, len(addresses))
 	for _, address := range addresses {
 		ready := address.ready
@@ -671,16 +795,16 @@ func newEndpointSlice(
 		})
 	}
 
-	portNameCopy := portName
-	portCopy := port
+	portNameCopy := "http"
+	portCopy := int32(8080)
 	protocol := corev1.ProtocolTCP
 
 	return &discoveryv1.EndpointSlice{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: namespace,
+			Namespace: "default",
 			Labels: map[string]string{
-				discoveryv1.LabelServiceName: serviceName,
+				discoveryv1.LabelServiceName: "demo",
 			},
 		},
 		AddressType: discoveryv1.AddressTypeIPv4,
@@ -729,12 +853,14 @@ func (w *countingStatusWriter) Update(
 }
 
 type fakeProvider struct {
-	mu          sync.Mutex
-	services    map[provider.ServiceRef]provider.Service
-	ensureCalls []provider.Service
-	deleteCalls []provider.ServiceRef
-	ensureErr   error
-	deleteErr   error
+	mu                 sync.Mutex
+	services           map[provider.ServiceRef]provider.Service
+	ensureCalls        []provider.Service
+	deleteCalls        []provider.ServiceRef
+	ensureChangedCount int
+	deleteChangedCount int
+	ensureErr          error
+	deleteErr          error
 }
 
 func newFakeProvider() *fakeProvider {
@@ -757,6 +883,7 @@ func (p *fakeProvider) Ensure(_ context.Context, service provider.Service) (bool
 	}
 
 	p.services[service.Ref()] = service.DeepCopy()
+	p.ensureChangedCount++
 	return true, nil
 }
 
@@ -774,6 +901,7 @@ func (p *fakeProvider) Delete(_ context.Context, ref provider.ServiceRef) (bool,
 	}
 
 	delete(p.services, ref)
+	p.deleteChangedCount++
 	return true, nil
 }
 

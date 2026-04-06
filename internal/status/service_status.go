@@ -22,11 +22,14 @@ func DesiredLoadBalancerIngress(assignedIP string) []corev1.LoadBalancerIngress 
 func LoadBalancerIngressEqual(current, desired []corev1.LoadBalancerIngress) bool {
 	desiredIP, desiredHasIP := firstIngressIP(desired)
 	if !desiredHasIP {
-		_, currentHasIP := firstIngressIP(current)
-		return !currentHasIP
+		return len(current) == 0
 	}
 
-	return containsIngressIP(current, desiredIP)
+	if len(current) != 1 {
+		return false
+	}
+
+	return strings.TrimSpace(current[0].IP) == desiredIP
 }
 
 // NeedsLoadBalancerIngressUpdate reports whether the Service status differs from the desired ingress.
@@ -100,14 +103,4 @@ func firstIngressIP(ingresses []corev1.LoadBalancerIngress) (string, bool) {
 	}
 
 	return "", false
-}
-
-func containsIngressIP(ingresses []corev1.LoadBalancerIngress, expectedIP string) bool {
-	for _, ingress := range ingresses {
-		if strings.TrimSpace(ingress.IP) == expectedIP {
-			return true
-		}
-	}
-
-	return false
 }
