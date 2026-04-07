@@ -1,0 +1,20 @@
+1. Confirm the controller is running:
+   kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }},app.kubernetes.io/name={{ include "k8s-lb-controller.name" . }}
+
+2. Example managed Service:
+
+   apiVersion: v1
+   kind: Service
+   metadata:
+     name: demo
+   spec:
+     type: LoadBalancer
+     loadBalancerClass: {{ .Values.controller.loadBalancerClass }}
+     selector:
+       app: demo
+     ports:
+       - port: 80
+         targetPort: 80
+
+3. Watch the assigned external address:
+   kubectl get svc demo -o wide

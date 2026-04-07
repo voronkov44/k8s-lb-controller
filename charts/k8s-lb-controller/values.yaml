@@ -1,0 +1,108 @@
+nameOverride: ""
+fullnameOverride: ""
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/f1lzz/k8s-lb-controller
+  pullPolicy: IfNotPresent
+  tag: ""
+
+imagePullSecrets: []
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+rbac:
+  create: true
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 128Mi
+  requests:
+    cpu: 10m
+    memory: 64Mi
+
+nodeSelector: {}
+affinity: {}
+priorityClassName: ""
+
+# These tolerations match the current Kustomize deployment and let the controller
+# run on control-plane nodes in small local clusters like kind.
+tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
+  - key: node-role.kubernetes.io/master
+    operator: Exists
+    effect: NoSchedule
+
+# Keep this greater than or equal to controller.gracefulShutdownTimeout so
+# Kubernetes does not force-stop the pod before the controller shuts down cleanly.
+terminationGracePeriodSeconds: 20
+
+controller:
+  leaderElection: true
+  loadBalancerClass: iedge.local/service-lb
+  ipPool:
+    - 203.0.113.10
+    - 203.0.113.11
+    - 203.0.113.12
+  requeueAfter: 30s
+  # Uses Go duration syntax. Keep terminationGracePeriodSeconds greater than or
+  # equal to this timeout so controller-runtime can finish graceful shutdown.
+  gracefulShutdownTimeout: 15s
+  logLevel: info
+  haproxy:
+    configPath: /tmp/k8s-lb-controller-haproxy.cfg
+    validateCommand: ""
+    reloadCommand: ""
+
+metrics:
+  # The chart renders K8S_LB_CONTROLLER_METRICS_ADDR as :<port> and uses the
+  # same port for the container and optional metrics Service.
+  port: 8080
+  service:
+    enabled: true
+    annotations: {}
+    labels: {}
+  serviceMonitor:
+    enabled: false
+    namespace: ""
+    annotations: {}
+    labels: {}
+    interval: ""
+    scrapeTimeout: ""
+    path: /metrics
+    scheme: http
+
+health:
+  # The chart renders K8S_LB_CONTROLLER_HEALTH_ADDR as :<port> and uses the
+  # same port for the health and readiness probes.
+  port: 8081
+  livenessProbe:
+    initialDelaySeconds: 15
+    periodSeconds: 20
+  readinessProbe:
+    initialDelaySeconds: 5
+    periodSeconds: 10
+
+extraEnv: []

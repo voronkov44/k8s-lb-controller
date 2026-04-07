@@ -1,217 +1,87 @@
 # k8s-lb-controller
 
-`k8s-lb-controller` is a Kubernetes controller built with `controller-runtime` and a Kubebuilder-based project layout.
-Проект решает узкую, понятную задачу: обрабатывает `Service` типа `LoadBalancer` с `loadBalancerClass: iedge.local/service-lb`, назначает им внешний IP из статического пула и синхронизирует file-based конфигурацию HAProxy по данным из `EndpointSlice`.
+A `controller-runtime`-based Kubernetes controller that manages selected `Service` objects of type `LoadBalancer` by allocating external IPs from a static pool, discovering backends from `EndpointSlice`, and syncing provider state.
 
-Текущая цель репозитория: defendable MVP без CRD, без Helm chart и без сложной сетевой логики. Контроллер работает только с built-in ресурсами Kubernetes:
+Russian version: [README.ru.md](README.ru.md)
 
-- `core/v1 Service`
-- `discovery.k8s.io/v1 EndpointSlice`
+## Overview
 
-## Что делает проект
+`k8s-lb-controller` is a focused controller project built around Kubernetes built-in resources.
+It watches `Service` objects as the primary resource and reacts to related `EndpointSlice` updates.
 
-Для matching `Service` контроллер:
+For matching `Service` objects, the controller:
 
-1. фильтрует ресурс по `spec.type == LoadBalancer`
-2. проверяет `spec.loadBalancerClass == iedge.local/service-lb`
-3. добавляет finalizer `iedge.local/service-lb-finalizer`
-4. выделяет или переиспользует IP из `K8S_LB_CONTROLLER_IP_POOL`
-5. идемпотентно обновляет `.status.loadBalancer.ingress`
-6. читает связанные `EndpointSlice`
-7. выбирает только ready IPv4 backend endpoints
-8. рендерит aggregate HAProxy config через provider
+- processes only `spec.type: LoadBalancer`
+- filters by a configured `spec.loadBalancerClass`
+- allocates or reuses an external IPv4 address from a configured static pool
+- publishes that address into `.status.loadBalancer.ingress`
+- discovers ready IPv4 backends from `EndpointSlice`
+- builds desired provider state and applies it through a provider abstraction
 
-При удалении managed `Service` контроллер:
+In the current MVP, the runtime provider is file-based and renders a deterministic HAProxy configuration.
+This keeps the project grounded in real controller behavior without hiding the control-plane logic behind a cloud provider or a custom API.
 
-1. вызывает provider cleanup
-2. пересобирает aggregate HAProxy config без удаляемого сервиса
-3. снимает finalizer только после успешного cleanup
+## Why This Project Exists
 
-## Архитектура MVP
+Kubernetes defines the `LoadBalancer` service model, but the implementation is always environment-specific.
+In managed clouds, that logic is usually provided by the platform. In local clusters, bare-metal labs, demos, and controlled setups, a smaller controller that makes the behavior explicit can be easier to understand and easier to experiment with.
 
-Базовый поток выглядит так:
+This repository exists as an intentionally scoped load balancer controller project: compact enough to read end to end, but realistic enough to demonstrate reconcile design, finalizers, status publication, backend discovery, provider integration, testing, and deployment workflow.
+It is meant as a serious public portfolio project and a lightweight controller for learning, demos, and controlled environments, not as a full replacement for systems such as MetalLB or cloud-provider load balancers.
 
-`Service -> Reconcile -> IPAM -> Status -> EndpointSlice discovery -> HAProxy provider -> haproxy.cfg`
+## Current MVP Scope
 
-Ключевые элементы:
+The repository is feature-complete for the current phase and covers the following implemented scope:
 
-- `Service` остаётся единственной управляемой сущностью, отдельные CRD не используются
-- `loadBalancerClass` фиксирован по умолчанию: `iedge.local/service-lb`
-- IPAM простой и статический, пул задаётся через env
-- backend discovery опирается только на `EndpointSlice`
-- provider file-based: хранит aggregate state in-memory и на каждом `Ensure/Delete` перерисовывает полный config
-- итоговый HAProxy config пишется атомарно через временный файл и `rename`
-- validate/reload команды optional и подходят для локального режима и для будущего containerized режима
-- `/metrics` отдаёт как стандартные controller-runtime метрики, так и несколько кастомных MVP-метрик контроллера
+- Watches `Service` as the primary reconciled object.
+- Watches related `EndpointSlice` objects and requeues the owning `Service`.
+- Processes only `Service` objects with `type: LoadBalancer`.
+- Filters managed objects by configured `loadBalancerClass`.
+- Allocates external IPv4 addresses from a static configured pool.
+- Reuses an already assigned valid address when possible.
+- Publishes the selected address into `Service` status.
+- Tracks backends through ready IPv4 endpoints discovered from `EndpointSlice`.
+- Syncs desired load balancer state through a provider abstraction.
+- Uses a file-based HAProxy provider in the runtime binary.
+- Handles finalizers, deletion, and cleanup when a `Service` is removed or stops matching controller selection.
+- Exposes metrics, health, and readiness endpoints.
+- Includes unit, regression, and end-to-end test coverage.
+- Includes a local development and Kustomize-based deployment flow.
 
-## Что реализовано
+Important current-state constraints:
 
-Phase 1:
+- The default runtime provider is aimed at IPv4 and TCP service traffic.
+- The controller focuses on control-plane behavior and provider synchronization.
+- Helm packaging is not implemented in this repository yet.
 
-- сохранён и аккуратно адаптирован Kubebuilder-based project layout
-- загрузка `.env` через `godotenv`
-- manager и wiring controller-runtime
-- Service reconciler
-- фильтрация по `LoadBalancer` и `loadBalancerClass`
+## Current Limitations
 
-Phase 2:
+This is an intentionally scoped controller MVP, and the current repository has a few important boundaries:
 
-- static IP pool
-- deterministic IP allocation
-- reuse уже назначенного валидного IP
-- идемпотентное обновление `.status.loadBalancer.ingress`
+- Address allocation is based on a configured static IPv4 pool.
+- Service selection is driven by a single configured `loadBalancerClass`.
+- The default runtime provider renders a file-based HAProxy configuration.
+- The controller is focused on IPv4 and TCP service traffic.
+- Installation is currently Kustomize-based; Helm packaging is planned separately and is not part of the current repository state.
 
-Phase 3:
+## How to Use It
 
-- provider interface
-- in-memory mock provider
-- finalizer flow
-- provider cleanup при удалении `Service`
+This controller fits best in environments where you want a small, explicit implementation of `LoadBalancer` behavior:
 
-Phase 4:
+- local clusters used for development or demos
+- bare-metal or lab environments with a controlled external IP pool
+- educational setups where the controller logic should remain easy to inspect
 
-- EndpointSlice-based backend discovery
-- только ready IPv4 backends
-- deterministic backend ordering
-- file-based HAProxy provider
-- deterministic aggregate HAProxy config
-- cleanup provider state из итогового config при удалении `Service`
+The current installation flow is Kustomize-based.
+Today, the practical usage pattern is:
 
-Phase 5a:
+1. Deploy the controller using the manifests in `config/default` or the matching `make` targets.
+2. Configure the controller with the `loadBalancerClass` and static IP pool you want it to manage.
+3. Create a `Service` with `spec.type: LoadBalancer`.
+4. Set `spec.loadBalancerClass` to the same value the controller is configured to watch.
+5. Let the controller allocate an address from the configured pool, discover backends from `EndpointSlice`, sync provider state, and publish the selected address into `.status.loadBalancer.ingress`.
 
-- unit tests доведены до MVP-level coverage по ключевым сценариям reconcile/IPAM/backends/provider
-- e2e сценарий усилен для demo use-case
-- добавлены базовые кастомные Prometheus metrics
-- README доведён до состояния финального MVP
-- оформлен короткий и воспроизводимый demo scenario
-
-## Что сознательно не реализовано
-
-Следующие возможности специально оставлены вне текущего MVP:
-
-- Helm chart
-- chart publishing
-- новый provider
-- CRD для IP pool
-- multiple providers
-- advanced HAProxy HTTP routing
-- TLS termination
-- advanced health checks
-- UDP support
-- persistent provider state
-- external API-based HAProxy management
-- split reconciliation into multiple controllers
-- web UI
-
-Helm chart intentionally отложен на следующий отдельный этап после стабилизации и финальной проверки кода.
-
-## Конфигурация
-
-Приложение при старте пытается загрузить `.env`.
-Если файла нет, используются обычные env и default values.
-Если переменная уже задана в окружении ОС или CI, она имеет приоритет над `.env`.
-
-`Makefile` тоже автоматически подхватывает `.env`, если файл существует.
-
-| Variable | Default |
-| --- | --- |
-| `K8S_LB_CONTROLLER_METRICS_ADDR` | `:8080` |
-| `K8S_LB_CONTROLLER_HEALTH_ADDR` | `:8081` |
-| `K8S_LB_CONTROLLER_LEADER_ELECT` | `false` |
-| `K8S_LB_CONTROLLER_LOAD_BALANCER_CLASS` | `iedge.local/service-lb` |
-| `K8S_LB_CONTROLLER_IP_POOL` | `203.0.113.10,203.0.113.11,203.0.113.12` |
-| `K8S_LB_CONTROLLER_REQUEUE_AFTER` | `30s` |
-| `K8S_LB_CONTROLLER_GRACEFUL_SHUTDOWN_TIMEOUT` | `15s` |
-| `K8S_LB_CONTROLLER_LOG_LEVEL` | `info` |
-| `K8S_LB_CONTROLLER_HAPROXY_CONFIG_PATH` | `/tmp/k8s-lb-controller-haproxy.cfg` |
-| `K8S_LB_CONTROLLER_HAPROXY_VALIDATE_COMMAND` | empty |
-| `K8S_LB_CONTROLLER_HAPROXY_RELOAD_COMMAND` | empty |
-
-Поддерживаемые уровни логирования: `debug`, `info`, `warn`, `error`.
-`K8S_LB_CONTROLLER_REQUEUE_AFTER` используется как retry interval только для managed `Service`, которые временно не получили IP из пула.
-
-В репозитории есть готовый [.env.example](.env.example):
-
-```dotenv
-K8S_LB_CONTROLLER_METRICS_ADDR=:8080
-K8S_LB_CONTROLLER_HEALTH_ADDR=:8081
-K8S_LB_CONTROLLER_LEADER_ELECT=false
-K8S_LB_CONTROLLER_LOAD_BALANCER_CLASS=iedge.local/service-lb
-K8S_LB_CONTROLLER_IP_POOL=203.0.113.10,203.0.113.11,203.0.113.12
-K8S_LB_CONTROLLER_REQUEUE_AFTER=30s
-K8S_LB_CONTROLLER_GRACEFUL_SHUTDOWN_TIMEOUT=15s
-K8S_LB_CONTROLLER_LOG_LEVEL=info
-K8S_LB_CONTROLLER_HAPROXY_CONFIG_PATH=/tmp/k8s-lb-controller-haproxy.cfg
-K8S_LB_CONTROLLER_HAPROXY_VALIDATE_COMMAND=
-K8S_LB_CONTROLLER_HAPROXY_RELOAD_COMMAND=
-```
-
-### Validate / reload commands
-
-Обе команды optional.
-
-- если validate command пустой, config просто атомарно записывается
-- если reload command пустой, это считается нормальным dev/demo режимом
-- token `{{config}}` заменяется на путь к config file
-- для validate используется candidate file path
-- для reload используется active config path
-
-Пример validate-only режима:
-
-```dotenv
-K8S_LB_CONTROLLER_HAPROXY_VALIDATE_COMMAND=haproxy -c -f {{config}}
-```
-
-Пример validate + reload:
-
-```dotenv
-K8S_LB_CONTROLLER_HAPROXY_VALIDATE_COMMAND=haproxy -c -f {{config}}
-K8S_LB_CONTROLLER_HAPROXY_RELOAD_COMMAND=/usr/local/bin/haproxy-reload {{config}}
-```
-
-## Пример managed Service
-
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: demo
-spec:
-  type: LoadBalancer
-  loadBalancerClass: iedge.local/service-lb
-  selector:
-    app: demo
-  ports:
-    - port: 80
-      targetPort: 80
-```
-
-## Локальный запуск
-
-Рекомендуемый путь для demo и ручной проверки: поднять `kind` или `k3d`, а сам controller запустить локально через `make run`.
-Так проще всего показать и `EXTERNAL-IP`, и generated HAProxy config, и `/metrics` на хосте.
-
-### Вариант 1. kind + локальный controller
-
-```sh
-kind create cluster --name k8s-lb-controller
-cp .env.example .env
-make run
-```
-
-Контроллер будет использовать текущий kubeconfig context.
-
-### Вариант 2. k3d + локальный controller
-
-```sh
-k3d cluster create k8s-lb-controller
-cp .env.example .env
-make run
-```
-
-### Вариант 3. controller внутри кластера
-
-Если нужен вариант ближе к CI/e2e:
+With the current repository state, a minimal in-cluster flow looks like this:
 
 ```sh
 make docker-build IMG=k8s-lb-controller:dev
@@ -219,44 +89,13 @@ kind load docker-image k8s-lb-controller:dev --name k8s-lb-controller
 make deploy IMG=k8s-lb-controller:dev
 ```
 
-Для `k3d` вместо `kind load` обычно используется:
-
-```sh
-k3d image import k8s-lb-controller:dev -c k8s-lb-controller
-make deploy IMG=k8s-lb-controller:dev
-```
-
-## Demo workload
-
-Для проверки контроллера достаточно простого `Deployment`:
+And a minimal managed `Service` looks like this:
 
 ```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: demo
-  namespace: demo
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: demo
-  template:
-    metadata:
-      labels:
-        app: demo
-    spec:
-      containers:
-        - name: nginx
-          image: nginx:stable
-          ports:
-            - containerPort: 80
----
 apiVersion: v1
 kind: Service
 metadata:
   name: demo
-  namespace: demo
 spec:
   type: LoadBalancer
   loadBalancerClass: iedge.local/service-lb
@@ -267,247 +106,227 @@ spec:
       targetPort: 80
 ```
 
-Применение:
+Helm packaging should be documented separately once the chart actually exists and is published.
 
-```sh
-kubectl create namespace demo
-kubectl apply -f demo.yaml
+## Architecture
+
+The repository is intentionally compact.
+The main moving parts are:
+
+```text
+cmd/main.go                    Manager startup and wiring
+internal/config/               Runtime configuration loading
+internal/controller/           Service reconcile logic and watches
+internal/ipam/                 Static IP pool parsing and allocation
+internal/backends/             EndpointSlice-based backend discovery
+internal/provider/             Provider interface and in-memory mock used in tests
+internal/provider/haproxy/     File-based HAProxy provider
+internal/status/               Service status publication helpers
+internal/metrics/              Custom Prometheus metrics
+config/default/                Kustomize deployment entrypoint
+config/manager/                Controller Deployment manifest
+config/rbac/                   Service account and RBAC
+config/prometheus/             Optional ServiceMonitor manifest
+test/e2e/                      Kind-based end-to-end tests
 ```
 
-Или через stdin:
+The controller keeps Kubernetes control-plane concerns separate from provider implementation details:
+
+- `internal/controller` decides whether a `Service` is managed and drives reconciliation.
+- `internal/ipam` owns deterministic static pool allocation.
+- `internal/backends` turns `EndpointSlice` data into provider-ready backend endpoints.
+- `internal/provider` defines the abstraction boundary.
+- `internal/provider/haproxy` materializes desired state as a rendered HAProxy config file.
+- `internal/status` updates `Service` status only when needed.
+
+This separation keeps the reconcile loop readable while still exercising real controller responsibilities.
+
+## Reconcile Flow
+
+For a matching `Service`, the reconcile loop follows this sequence:
+
+1. Read the `Service`.
+2. If the object is deleting, clean up provider state and remove the finalizer.
+3. If the object no longer matches controller selection, clean up previously managed state, clear status when owned by this controller, and remove the finalizer.
+4. Ensure the controller finalizer is present.
+5. List relevant `Service` objects and allocate or reuse an IP from the configured pool.
+6. List related `EndpointSlice` objects and discover ready IPv4 backends.
+7. Build the provider model and call `provider.Ensure`.
+8. Publish the selected external IP into `.status.loadBalancer.ingress`.
+9. Requeue only when a managed `Service` cannot currently obtain a free IP from the pool.
+
+This ordering matters: provider synchronization happens before status publication, and cleanup paths are explicit for both deletion and "no longer managed" transitions.
+
+## Configuration
+
+The binary is configured through environment variables.
+When `.env` exists, it is loaded without overriding values that are already set in the environment.
+This keeps local development convenient while leaving CI and deployment configuration explicit.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `K8S_LB_CONTROLLER_METRICS_ADDR` | `:8080` | Metrics server bind address |
+| `K8S_LB_CONTROLLER_HEALTH_ADDR` | `:8081` | Health and readiness probe bind address |
+| `K8S_LB_CONTROLLER_LEADER_ELECT` | `false` | Enable leader election |
+| `K8S_LB_CONTROLLER_LOAD_BALANCER_CLASS` | `iedge.local/service-lb` | Managed `loadBalancerClass` |
+| `K8S_LB_CONTROLLER_IP_POOL` | `203.0.113.10,203.0.113.11,203.0.113.12` | Static external IPv4 pool |
+| `K8S_LB_CONTROLLER_REQUEUE_AFTER` | `30s` | Requeue delay when no IP is available |
+| `K8S_LB_CONTROLLER_GRACEFUL_SHUTDOWN_TIMEOUT` | `15s` | Controller manager graceful shutdown timeout |
+| `K8S_LB_CONTROLLER_LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, `error` |
+| `K8S_LB_CONTROLLER_HAPROXY_CONFIG_PATH` | `/tmp/k8s-lb-controller-haproxy.cfg` | Rendered HAProxy config path |
+| `K8S_LB_CONTROLLER_HAPROXY_VALIDATE_COMMAND` | empty | Optional command used to validate a candidate config |
+| `K8S_LB_CONTROLLER_HAPROXY_RELOAD_COMMAND` | empty | Optional command used after a successful config update |
+
+Notes:
+
+- `K8S_LB_CONTROLLER_IP_POOL` must contain valid, unique IPv4 addresses.
+- `K8S_LB_CONTROLLER_REQUEUE_AFTER` is used only for managed services waiting for a free IP.
+- `K8S_LB_CONTROLLER_GRACEFUL_SHUTDOWN_TIMEOUT` must be positive.
+- When HAProxy validate or reload commands are configured, `{{config}}` is replaced with the relevant config file path.
+- The Kustomize deployment manifest enables leader election explicitly for in-cluster operation.
+
+For local development, `.env.example` provides a ready-to-copy starting point:
 
 ```sh
-kubectl create namespace demo
-kubectl apply -f - <<'EOF'
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: demo
-  namespace: demo
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: demo
-  template:
-    metadata:
-      labels:
-        app: demo
-    spec:
-      containers:
-        - name: nginx
-          image: nginx:stable
-          ports:
-            - containerPort: 80
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: demo
-  namespace: demo
-spec:
-  type: LoadBalancer
-  loadBalancerClass: iedge.local/service-lb
-  selector:
-    app: demo
-  ports:
-    - port: 80
-      targetPort: 80
-EOF
+cp .env.example .env
 ```
 
-## Как проверить результат
+## Running Locally
 
-Показать назначенный внешний IP:
+### Prerequisites
+
+- Go 1.26.x
+- Docker
+- `kubectl`
+- `kind` for the automated e2e flow
+
+### Common Development Commands
 
 ```sh
-kubectl get svc demo -n demo
-kubectl get svc demo -n demo -o jsonpath='{.status.loadBalancer.ingress[0].ip}'; echo
+make build
+make lint
+make test
+make test-e2e
 ```
 
-Ожидаемо первым будет назначен IP `203.0.113.10`.
-
-Проверить finalizer:
+Useful additional commands:
 
 ```sh
-kubectl get svc demo -n demo -o jsonpath='{.metadata.finalizers}'; echo
+make manifests
+make build-installer
 ```
 
-Проверить связанные `EndpointSlice`:
+### Recommended Local Controller Flow
 
-```sh
-kubectl get endpointslice -n demo -l kubernetes.io/service-name=demo -o wide
-```
-
-Проверить generated HAProxy config при локальном запуске контроллера:
-
-```sh
-cat /tmp/k8s-lb-controller-haproxy.cfg
-```
-
-Если контроллер запущен как Deployment внутри кластера, смотреть файл менее удобно, поэтому для защиты обычно проще использовать локальный `make run`.
-
-## Metrics
-
-Метрики доступны на стандартном endpoint `/metrics`.
-В `config/default` включён обычный metrics `Service`, а `ServiceMonitor` остаётся отдельным optional manifest в `config/prometheus` для кластеров с Prometheus Operator.
-
-При локальном запуске:
-
-```sh
-curl -s http://127.0.0.1:8080/metrics | grep '^k8s_lb_controller_'
-```
-
-При in-cluster deployment:
-
-```sh
-kubectl port-forward -n k8s-lb-controller-system \
-  svc/k8s-lb-controller-controller-manager-metrics-service 8080:8080
-curl -s http://127.0.0.1:8080/metrics | grep '^k8s_lb_controller_'
-```
-
-Добавленные MVP-метрики:
-
-- `k8s_lb_controller_service_reconcile_total`
-- `k8s_lb_controller_service_reconcile_errors_total`
-- `k8s_lb_controller_service_reconcile_duration_seconds`
-- `k8s_lb_controller_ip_allocations_total{result=...}`
-- `k8s_lb_controller_provider_operations_total{operation=...,result=...}`
-- `k8s_lb_controller_provider_managed_services`
-
-## Удаление и cleanup
-
-Удалить managed `Service`:
-
-```sh
-kubectl delete svc demo -n demo
-```
-
-Проверить, что `Service` не завис в `Terminating`:
-
-```sh
-kubectl wait --for=delete svc/demo -n demo --timeout=120s
-```
-
-Если контроллер запущен локально, после удаления можно снова открыть config и убедиться, что блоки для `demo` исчезли:
-
-```sh
-cat /tmp/k8s-lb-controller-haproxy.cfg
-```
-
-## Demo Scenario Для Защиты
-
-Ниже самый простой и воспроизводимый сценарий. Он рассчитан на локальный запуск контроллера против `kind` или `k3d`, потому что так удобно одновременно показать логику контроллера, generated config и метрики.
-
-1. Поднять кластер:
+For interactive development and demos, the simplest path is to run the controller locally against your current kubeconfig context:
 
 ```sh
 kind create cluster --name k8s-lb-controller
-```
-
-2. Запустить controller локально:
-
-```sh
 cp .env.example .env
 make run
 ```
 
-3. Развернуть demo app и managed `Service`:
+Notes:
+
+- `make run` starts the controller on your host.
+- The binary performs a small local kubeconfig preflight check to catch a missing kubeconfig or missing `current-context`.
+- With the default configuration, the rendered HAProxy config is written to `/tmp/k8s-lb-controller-haproxy.cfg` on the host.
+
+### In-Cluster Development Flow
+
+If you want to run the controller as a Deployment inside the cluster:
 
 ```sh
-kubectl create namespace demo
-kubectl apply -f demo.yaml
+make docker-build IMG=k8s-lb-controller:dev
+kind load docker-image k8s-lb-controller:dev --name k8s-lb-controller
+make deploy IMG=k8s-lb-controller:dev
 ```
 
-4. Показать `EXTERNAL-IP`:
+This path is close to what the e2e tests exercise.
+
+## Deployment / Manifests
+
+The current installation flow is Kustomize-based.
+
+- `config/default` is the main deployment entrypoint.
+- `config/manager` contains the controller Deployment.
+- `config/rbac` contains the service account and minimal RBAC for `Service` and `EndpointSlice`.
+- `config/default/metrics_service.yaml` exposes the metrics endpoint internally.
+- `config/prometheus/monitor.yaml` contains an optional `ServiceMonitor` for clusters that already have Prometheus Operator CRDs.
+
+The `ServiceMonitor` stays optional because not every cluster has Prometheus Operator CRDs installed.
+Helm installation is not documented here because Helm packaging is not part of the current repository state.
+
+Render the default install set with the repo-local Kustomize tool:
 
 ```sh
-kubectl get svc demo -n demo
-kubectl get svc demo -n demo -o jsonpath='{.status.loadBalancer.ingress[0].ip}'; echo
+make kustomize
+bin/kustomize build config/default
 ```
 
-5. Показать finalizer:
+Deploy it:
 
 ```sh
-kubectl get svc demo -n demo -o jsonpath='{.metadata.finalizers}'; echo
+make deploy IMG=ghcr.io/f1lzz/k8s-lb-controller:latest
 ```
 
-6. Показать `EndpointSlice`:
+Remove it:
 
 ```sh
-kubectl get endpointslice -n demo -l kubernetes.io/service-name=demo -o wide
+make undeploy
 ```
 
-7. Показать generated HAProxy config:
+Generate a consolidated install bundle:
 
 ```sh
-cat /tmp/k8s-lb-controller-haproxy.cfg
+make build-installer
 ```
 
-8. Увеличить число backend pod:
+This writes `dist/install.yaml`.
 
-```sh
-kubectl scale deployment demo -n demo --replicas=2
-kubectl rollout status deployment/demo -n demo
+### Minimal Managed Service Example
+
+The controller only manages services that match the configured class:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo
+spec:
+  type: LoadBalancer
+  loadBalancerClass: iedge.local/service-lb
+  selector:
+    app: demo
+  ports:
+    - port: 80
+      targetPort: 80
 ```
 
-9. Повторно показать `EndpointSlice` и HAProxy config:
+## Testing
 
-```sh
-kubectl get endpointslice -n demo -l kubernetes.io/service-name=demo -o wide
-cat /tmp/k8s-lb-controller-haproxy.cfg
-```
+Testing is one of the stronger parts of the repository in its current state.
 
-10. Показать метрики:
+- `make lint` runs `golangci-lint`.
+- `make test` runs the non-e2e Go test suite with envtest assets and writes `cover.out`.
+- `make test-e2e` creates a Kind cluster, builds and loads the controller image, deploys the manifests, runs Ginkgo end-to-end tests, and tears the cluster down.
 
-```sh
-curl -s http://127.0.0.1:8080/metrics | grep '^k8s_lb_controller_'
-```
+The current test coverage includes:
 
-11. Удалить `Service`:
+- controller selection, lifecycle, finalizer, and cleanup behavior
+- static IP allocation and reuse logic
+- `EndpointSlice` backend discovery behavior
+- status update ordering and idempotency
+- HAProxy provider rendering and apply semantics
+- manifest validation for graceful shutdown alignment
+- end-to-end verification of metrics, managed vs ignored services, backend updates, and deletion cleanup
 
-```sh
-kubectl delete svc demo -n demo
-kubectl wait --for=delete svc/demo -n demo --timeout=120s
-```
+The repository also includes GitHub Actions workflows for:
 
-12. Показать cleanup:
+- lint
+- unit and regression tests
+- end-to-end tests
 
-```sh
-cat /tmp/k8s-lb-controller-haproxy.cfg
-```
+## License
 
-Что удобно проговаривать на защите:
-
-- контроллер не требует CRD и работает поверх built-in `Service`
-- выбор ресурсов делается через `loadBalancerClass`
-- IP назначается из статического пула детерминированно
-- backend discovery идёт через `EndpointSlice`
-- provider синхронизирует aggregate HAProxy config
-- удаление безопасное благодаря finalizer
-- базовая observability есть через `/metrics`
-
-## Команды для разработки
-
-```sh
-make manifests
-make lint
-make test
-make run
-```
-
-E2E:
-
-```sh
-make test-e2e
-```
-
-## Следующий этап
-
-После стабилизации текущего MVP следующим отдельным этапом планируется packaging:
-
-- Helm chart
-- упаковка и публикация chart
-- при необходимости дополнительная polish-интеграция для deployment workflow
-
-На текущем этапе Helm chart intentionally не входит в готовую часть проекта.
+Licensed under the Apache License, Version 2.0.
