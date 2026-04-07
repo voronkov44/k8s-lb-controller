@@ -17,24 +17,32 @@ limitations under the License.
 package main
 
 import (
-	"crypto/tls"
-	"flag"
+	"context"
+	"fmt"
 	"os"
+	"sort"
+	"strings"
+	"sync/atomic"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
+	"k8s.io/client-go/tools/clientcmd"
 
+	"go.uber.org/zap/zapcore"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
-	"sigs.k8s.io/controller-runtime/pkg/log/zap"
-	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
+	ctrlzap "sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
-	// +kubebuilder:scaffold:imports
+
+	"github.com/voronkov44/k8s-lb-controller/internal/config"
+	"github.com/voronkov44/k8s-lb-controller/internal/controller"
+	controllermetrics "github.com/voronkov44/k8s-lb-controller/internal/metrics"
+	haproxyprovider "github.com/voronkov44/k8s-lb-controller/internal/provider/haproxy"
 )
 
 var (
@@ -42,139 +50,97 @@ var (
 	setupLog = ctrl.Log.WithName("setup")
 )
 
-func init() {
-	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+type kubeconfigDiagnosticKind string
 
-	// +kubebuilder:scaffold:scheme
+const (
+	kubeconfigDiagnosticMissingCurrentContext kubeconfigDiagnosticKind = "missingCurrentContext"
+	kubeconfigDiagnosticNoKubeconfig          kubeconfigDiagnosticKind = "noKubeconfig"
+)
+
+type kubeconfigDiagnostic struct {
+	kind              kubeconfigDiagnosticKind
+	kubeconfigPath    string
+	availableContexts []string
+	checkedSources    []string
+	suggestedCommand  string
 }
 
-// nolint:gocyclo
+type gracefulShutdownObserver struct {
+	timeout time.Duration
+	started atomic.Bool
+}
+
+func init() {
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+}
+
 func main() {
-	var metricsAddr string
-	var metricsCertPath, metricsCertName, metricsCertKey string
-	var webhookCertPath, webhookCertName, webhookCertKey string
-	var enableLeaderElection bool
-	var probeAddr string
-	var secureMetrics bool
-	var enableHTTP2 bool
-	var tlsOpts []func(*tls.Config)
-	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
-		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
-	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
-		"Enable leader election for controller manager. "+
-			"Enabling this will ensure there is only one active controller manager.")
-	flag.BoolVar(&secureMetrics, "metrics-secure", true,
-		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
-	flag.StringVar(&webhookCertPath, "webhook-cert-path", "", "The directory that contains the webhook certificate.")
-	flag.StringVar(&webhookCertName, "webhook-cert-name", "tls.crt", "The name of the webhook certificate file.")
-	flag.StringVar(&webhookCertKey, "webhook-cert-key", "tls.key", "The name of the webhook key file.")
-	flag.StringVar(&metricsCertPath, "metrics-cert-path", "",
-		"The directory that contains the metrics server certificate.")
-	flag.StringVar(&metricsCertName, "metrics-cert-name", "tls.crt", "The name of the metrics server certificate file.")
-	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
-	flag.BoolVar(&enableHTTP2, "enable-http2", false,
-		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
-	opts := zap.Options{
-		Development: true,
-	}
-	opts.BindFlags(flag.CommandLine)
-	flag.Parse()
-
-	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
-
-	// if the enable-http2 flag is false (the default), http/2 should be disabled
-	// due to its vulnerabilities. More specifically, disabling http/2 will
-	// prevent from being vulnerable to the HTTP/2 Stream Cancellation and
-	// Rapid Reset CVEs. For more information see:
-	// - https://github.com/advisories/GHSA-qppj-fm5r-hxr3
-	// - https://github.com/advisories/GHSA-4374-p667-p6c8
-	disableHTTP2 := func(c *tls.Config) {
-		setupLog.Info("disabling http/2")
-		c.NextProtos = []string{"http/1.1"}
+	dotEnvLoaded, err := config.LoadDotEnv()
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "unable to load %s: %v\n", config.DotEnvFileName, err)
+		os.Exit(1)
 	}
 
-	if !enableHTTP2 {
-		tlsOpts = append(tlsOpts, disableHTTP2)
+	cfg, err := config.Load()
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "unable to load configuration: %v\n", err)
+		os.Exit(1)
 	}
 
-	// Initial webhook TLS options
-	webhookTLSOpts := tlsOpts
-	webhookServerOptions := webhook.Options{
-		TLSOpts: webhookTLSOpts,
+	if err := configureLogger(cfg.LogLevel); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "unable to configure logger: %v\n", err)
+		os.Exit(1)
 	}
 
-	if len(webhookCertPath) > 0 {
-		setupLog.Info("Initializing webhook certificate watcher using provided certificates",
-			"webhook-cert-path", webhookCertPath, "webhook-cert-name", webhookCertName, "webhook-cert-key", webhookCertKey)
+	setupLog.Info("startup beginning")
+	logDotEnvStatus(dotEnvLoaded)
 
-		webhookServerOptions.CertDir = webhookCertPath
-		webhookServerOptions.CertName = webhookCertName
-		webhookServerOptions.KeyName = webhookCertKey
+	if !likelyInClusterEnvironment() {
+		diagnostic, err := diagnoseLocalKubeconfig(os.Args[1:])
+		if err != nil {
+			setupLog.Error(err, "unable to inspect local kubeconfig")
+			os.Exit(1)
+		}
+		if diagnostic != nil {
+			logPreflightKubeconfigDiagnostic(diagnostic)
+			os.Exit(1)
+		}
 	}
 
-	webhookServer := webhook.NewServer(webhookServerOptions)
-
-	// Metrics endpoint is enabled in 'config/default/kustomization.yaml'. The Metrics options configure the server.
-	// More info:
-	// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.23.1/pkg/metrics/server
-	// - https://book.kubebuilder.io/reference/metrics.html
-	metricsServerOptions := metricsserver.Options{
-		BindAddress:   metricsAddr,
-		SecureServing: secureMetrics,
-		TLSOpts:       tlsOpts,
+	restConfig, err := ctrl.GetConfig()
+	if err != nil {
+		setupLog.Error(err, "unable to load Kubernetes client configuration")
+		os.Exit(1)
 	}
 
-	if secureMetrics {
-		// FilterProvider is used to protect the metrics endpoint with authn/authz.
-		// These configurations ensure that only authorized users and service accounts
-		// can access the metrics endpoint. The RBAC are configured in 'config/rbac/kustomization.yaml'. More info:
-		// https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.23.1/pkg/metrics/filters#WithAuthenticationAndAuthorization
-		metricsServerOptions.FilterProvider = filters.WithAuthenticationAndAuthorization
-	}
-
-	// If the certificate is not specified, controller-runtime will automatically
-	// generate self-signed certificates for the metrics server. While convenient for development and testing,
-	// this setup is not recommended for production.
-	//
-	// TODO(user): If you enable certManager, uncomment the following lines:
-	// - [METRICS-WITH-CERTS] at config/default/kustomization.yaml to generate and use certificates
-	// managed by cert-manager for the metrics server.
-	// - [PROMETHEUS-WITH-CERTS] at config/prometheus/kustomization.yaml for TLS certification.
-	if len(metricsCertPath) > 0 {
-		setupLog.Info("Initializing metrics certificate watcher using provided certificates",
-			"metrics-cert-path", metricsCertPath, "metrics-cert-name", metricsCertName, "metrics-cert-key", metricsCertKey)
-
-		metricsServerOptions.CertDir = metricsCertPath
-		metricsServerOptions.CertName = metricsCertName
-		metricsServerOptions.KeyName = metricsCertKey
-	}
-
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:                 scheme,
-		Metrics:                metricsServerOptions,
-		WebhookServer:          webhookServer,
-		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "ed30ec16.diploma.local",
-		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
-		// when the Manager ends. This requires the binary to immediately end when the
-		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
-		// speeds up voluntary leader transitions as the new leader don't have to wait
-		// LeaseDuration time first.
-		//
-		// In the default scaffold provided, the program ends immediately after
-		// the manager stops, so would be fine to enable this option. However,
-		// if you are doing or is intended to do any operation such as perform cleanups
-		// after the manager stops then its usage might be unsafe.
-		// LeaderElectionReleaseOnCancel: true,
+	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
+		Scheme:                  scheme,
+		Metrics:                 metricsserver.Options{BindAddress: cfg.MetricsAddr, SecureServing: false},
+		HealthProbeBindAddress:  cfg.HealthAddr,
+		LeaderElection:          cfg.LeaderElect,
+		LeaderElectionID:        "lbcontroller.voronkov44.dev",
+		GracefulShutdownTimeout: &cfg.GracefulShutdownTimeout,
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
 	}
 
-	// +kubebuilder:scaffold:builder
+	serviceProvider, err := haproxyprovider.NewProvider(haproxyprovider.Config{
+		ConfigPath:      cfg.HAProxyConfigPath,
+		ValidateCommand: cfg.HAProxyValidateCommand,
+		ReloadCommand:   cfg.HAProxyReloadCommand,
+	})
+	if err != nil {
+		setupLog.Error(err, "unable to create HAProxy provider")
+		os.Exit(1)
+	}
+	instrumentedProvider := controllermetrics.WrapProvider(serviceProvider)
+
+	if err := controller.SetupControllers(mgr, cfg, instrumentedProvider); err != nil {
+		setupLog.Error(err, "unable to set up controllers")
+		os.Exit(1)
+	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")
@@ -185,9 +151,197 @@ func main() {
 		os.Exit(1)
 	}
 
-	setupLog.Info("starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
-		setupLog.Error(err, "problem running manager")
+	setupLog.Info("manager configuration",
+		"metricsAddr", cfg.MetricsAddr,
+		"healthAddr", cfg.HealthAddr,
+		"leaderElection", cfg.LeaderElect,
+		"gracefulShutdownTimeout", cfg.GracefulShutdownTimeout.String(),
+		"loadBalancerClass", cfg.LoadBalancerClass,
+		"requeueAfter", cfg.RequeueAfter.String(),
+		"logLevel", cfg.LogLevel,
+		"haproxyConfigPath", cfg.HAProxyConfigPath,
+		"haproxyValidateEnabled", cfg.HAProxyValidateCommand != "",
+		"haproxyReloadEnabled", cfg.HAProxyReloadCommand != "",
+	)
+
+	shutdownCtx := ctrl.SetupSignalHandler()
+	shutdownObserver := observeGracefulShutdown(shutdownCtx, cfg.GracefulShutdownTimeout)
+
+	if err := mgr.Start(shutdownCtx); err != nil {
+		if shutdownCtx.Err() != nil {
+			shutdownObserver.logStarted()
+			setupLog.Error(err, "graceful shutdown failed")
+		} else {
+			setupLog.Error(err, "problem running manager")
+		}
 		os.Exit(1)
 	}
+
+	if shutdownCtx.Err() != nil {
+		shutdownObserver.logStarted()
+		setupLog.Info("graceful shutdown completed")
+	}
+}
+
+func observeGracefulShutdown(ctx context.Context, timeout time.Duration) *gracefulShutdownObserver {
+	observer := &gracefulShutdownObserver{timeout: timeout}
+	go func() {
+		<-ctx.Done()
+		observer.logStarted()
+	}()
+
+	return observer
+}
+
+func (o *gracefulShutdownObserver) logStarted() {
+	if !o.started.CompareAndSwap(false, true) {
+		return
+	}
+
+	setupLog.Info("shutdown signal received")
+	setupLog.Info("graceful shutdown started", "timeout", o.timeout.String())
+}
+
+func logDotEnvStatus(dotEnvLoaded bool) {
+	if dotEnvLoaded {
+		setupLog.Info("loaded environment variables from dotenv file", "path", config.DotEnvFileName)
+		return
+	}
+
+	setupLog.Info("dotenv file not found, using environment variables and defaults", "path", config.DotEnvFileName)
+}
+
+func configureLogger(levelName string) error {
+	level, err := parseLogLevel(levelName)
+	if err != nil {
+		return err
+	}
+
+	opts := ctrlzap.Options{
+		Development: level == zapcore.DebugLevel,
+		Level:       level,
+		TimeEncoder: zapcore.RFC3339TimeEncoder,
+	}
+
+	ctrl.SetLogger(ctrlzap.New(ctrlzap.UseFlagOptions(&opts)))
+	return nil
+}
+
+func parseLogLevel(levelName string) (zapcore.Level, error) {
+	switch levelName {
+	case config.LogLevelDebug:
+		return zapcore.DebugLevel, nil
+	case config.LogLevelInfo:
+		return zapcore.InfoLevel, nil
+	case config.LogLevelWarn:
+		return zapcore.WarnLevel, nil
+	case config.LogLevelError:
+		return zapcore.ErrorLevel, nil
+	default:
+		return zapcore.InfoLevel, fmt.Errorf("unsupported log level %q", levelName)
+	}
+}
+
+func logPreflightKubeconfigDiagnostic(diagnostic *kubeconfigDiagnostic) {
+	switch diagnostic.kind {
+	case kubeconfigDiagnosticMissingCurrentContext:
+		fields := []any{
+			"kubeconfigPath", diagnostic.kubeconfigPath,
+			"availableContexts", diagnostic.availableContexts,
+		}
+		if diagnostic.suggestedCommand != "" {
+			fields = append(fields, "suggestedCommand", diagnostic.suggestedCommand)
+		}
+
+		setupLog.Info("kubeconfig found, but current-context is not set", fields...)
+	case kubeconfigDiagnosticNoKubeconfig:
+		setupLog.Info("no kubeconfig found for local run", "checkedSources", diagnostic.checkedSources)
+	}
+}
+
+func diagnoseLocalKubeconfig(args []string) (*kubeconfigDiagnostic, error) {
+	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+	if explicitPath := kubeconfigFlagValue(args); explicitPath != "" {
+		loadingRules.ExplicitPath = explicitPath
+	}
+
+	checkedSources := loadingRules.GetLoadingPrecedence()
+	existingSources := existingKubeconfigPaths(checkedSources)
+	if len(existingSources) == 0 {
+		return &kubeconfigDiagnostic{
+			kind:           kubeconfigDiagnosticNoKubeconfig,
+			checkedSources: checkedSources,
+		}, nil
+	}
+
+	rawConfig, err := loadingRules.Load()
+	if err != nil {
+		return nil, err
+	}
+
+	if rawConfig.CurrentContext != "" || len(rawConfig.Contexts) == 0 {
+		return nil, nil
+	}
+
+	availableContexts := make([]string, 0, len(rawConfig.Contexts))
+	for name := range rawConfig.Contexts {
+		availableContexts = append(availableContexts, name)
+	}
+	sort.Strings(availableContexts)
+
+	if len(availableContexts) == 0 {
+		return nil, nil
+	}
+
+	return &kubeconfigDiagnostic{
+		kind:              kubeconfigDiagnosticMissingCurrentContext,
+		kubeconfigPath:    existingSources[0],
+		availableContexts: availableContexts,
+		checkedSources:    checkedSources,
+		suggestedCommand:  fmt.Sprintf("kubectl config use-context %s", availableContexts[0]),
+	}, nil
+}
+
+func kubeconfigFlagValue(args []string) string {
+	for index := range len(args) {
+		arg := strings.TrimSpace(args[index])
+		switch {
+		case strings.HasPrefix(arg, "--kubeconfig="):
+			return strings.TrimSpace(strings.TrimPrefix(arg, "--kubeconfig="))
+		case strings.HasPrefix(arg, "-kubeconfig="):
+			return strings.TrimSpace(strings.TrimPrefix(arg, "-kubeconfig="))
+		case arg == "--kubeconfig" || arg == "-kubeconfig":
+			if index+1 >= len(args) {
+				return ""
+			}
+
+			return strings.TrimSpace(args[index+1])
+		}
+	}
+
+	return ""
+}
+
+func existingKubeconfigPaths(paths []string) []string {
+	existing := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+
+		info, err := os.Stat(path)
+		if err != nil || info.IsDir() {
+			continue
+		}
+
+		existing = append(existing, path)
+	}
+
+	return existing
+}
+
+func likelyInClusterEnvironment() bool {
+	_, hasServiceHost := os.LookupEnv("KUBERNETES_SERVICE_HOST")
+	_, hasServicePort := os.LookupEnv("KUBERNETES_SERVICE_PORT")
+	return hasServiceHost && hasServicePort
 }

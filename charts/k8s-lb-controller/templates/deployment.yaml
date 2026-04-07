@@ -1,0 +1,108 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "k8s-lb-controller.fullname" . }}
+  labels:
+    {{- include "k8s-lb-controller.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "k8s-lb-controller.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "k8s-lb-controller.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        kubectl.kubernetes.io/default-container: manager
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "k8s-lb-controller.serviceAccountName" . }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . | quote }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: manager
+          image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /manager
+          env:
+            - name: K8S_LB_CONTROLLER_METRICS_ADDR
+              value: {{ include "k8s-lb-controller.metricsAddr" . | quote }}
+            - name: K8S_LB_CONTROLLER_HEALTH_ADDR
+              value: {{ include "k8s-lb-controller.healthAddr" . | quote }}
+            - name: K8S_LB_CONTROLLER_LEADER_ELECT
+              value: {{ ternary "true" "false" .Values.controller.leaderElection | quote }}
+            - name: K8S_LB_CONTROLLER_LOAD_BALANCER_CLASS
+              value: {{ .Values.controller.loadBalancerClass | quote }}
+            - name: K8S_LB_CONTROLLER_IP_POOL
+              value: {{ include "k8s-lb-controller.ipPool" . | quote }}
+            - name: K8S_LB_CONTROLLER_REQUEUE_AFTER
+              value: {{ .Values.controller.requeueAfter | quote }}
+            - name: K8S_LB_CONTROLLER_GRACEFUL_SHUTDOWN_TIMEOUT
+              value: {{ .Values.controller.gracefulShutdownTimeout | quote }}
+            - name: K8S_LB_CONTROLLER_LOG_LEVEL
+              value: {{ .Values.controller.logLevel | quote }}
+            - name: K8S_LB_CONTROLLER_HAPROXY_CONFIG_PATH
+              value: {{ .Values.controller.haproxy.configPath | quote }}
+            - name: K8S_LB_CONTROLLER_HAPROXY_VALIDATE_COMMAND
+              value: {{ .Values.controller.haproxy.validateCommand | quote }}
+            - name: K8S_LB_CONTROLLER_HAPROXY_RELOAD_COMMAND
+              value: {{ .Values.controller.haproxy.reloadCommand | quote }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+            - name: probes
+              containerPort: {{ .Values.health.port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: probes
+            initialDelaySeconds: {{ .Values.health.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.health.livenessProbe.periodSeconds }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: probes
+            initialDelaySeconds: {{ .Values.health.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.health.readinessProbe.periodSeconds }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
