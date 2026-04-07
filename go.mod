@@ -1,4 +1,4 @@
-module github.com/f1lzz/k8s-lb-controller
+module github.com/voronkov44/k8s-lb-controller
 
 go 1.26
 

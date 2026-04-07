@@ -26,7 +26,7 @@ import (
 
 	"github.com/joho/godotenv"
 
-	"github.com/f1lzz/k8s-lb-controller/internal/ipam"
+	"github.com/voronkov44/k8s-lb-controller/internal/ipam"
 )
 
 const (

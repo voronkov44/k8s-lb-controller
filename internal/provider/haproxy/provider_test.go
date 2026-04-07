@@ -23,7 +23,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/f1lzz/k8s-lb-controller/internal/provider"
+	"github.com/voronkov44/k8s-lb-controller/internal/provider"
 )
 
 func TestRenderProducesDeterministicConfig(t *testing.T) {

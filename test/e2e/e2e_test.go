@@ -35,7 +35,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/f1lzz/k8s-lb-controller/test/utils"
+	"github.com/voronkov44/k8s-lb-controller/test/utils"
 )
 
 const (

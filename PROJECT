@@ -3,5 +3,5 @@ domain: example.com
 layout:
 - go.kubebuilder.io/v4
 projectName: k8s-lb-controller
-repo: github.com/f1lzz/k8s-lb-controller
+repo: github.com/voronkov44/k8s-lb-controller
 version: "3"

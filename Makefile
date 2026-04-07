@@ -1,5 +1,5 @@
 # Image URL used by build, push, and deploy targets.
-IMG ?= ghcr.io/f1lzz/k8s-lb-controller:latest
+IMG ?= ghcr.io/voronkov44/k8s-lb-controller:latest
 
 # Pin the Go toolchain used by make targets to match go.mod and CI.
 GOTOOLCHAIN ?= go1.26.1
@@ -176,7 +176,7 @@ build-installer: manifests generate kustomize ## Generate a consolidated YAML wi
 	trap 'rm -rf "$$tmpdir"' EXIT; \
 	cp -R config "$$tmpdir/"; \
 	mkdir -p "$$repo_root/dist"; \
-	cd "$$tmpdir/config/manager" && "$(KUSTOMIZE)" edit set image ghcr.io/f1lzz/k8s-lb-controller=${IMG}; \
+	cd "$$tmpdir/config/manager" && "$(KUSTOMIZE)" edit set image ghcr.io/voronkov44/k8s-lb-controller=${IMG}; \
 	"$(KUSTOMIZE)" build "$$tmpdir/config/default" > "$$repo_root/dist/install.yaml"
 
 ##@ Deployment
@@ -200,7 +200,7 @@ deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in
 	@tmpdir="$$(mktemp -d)"; \
 	trap 'rm -rf "$$tmpdir"' EXIT; \
 	cp -R config "$$tmpdir/"; \
-	cd "$$tmpdir/config/manager" && "$(KUSTOMIZE)" edit set image ghcr.io/f1lzz/k8s-lb-controller=${IMG}; \
+	cd "$$tmpdir/config/manager" && "$(KUSTOMIZE)" edit set image ghcr.io/voronkov44/k8s-lb-controller=${IMG}; \
 	"$(KUSTOMIZE)" build "$$tmpdir/config/default" | "$(KUBECTL)" apply -f -
 
 .PHONY: undeploy

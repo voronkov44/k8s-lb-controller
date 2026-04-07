@@ -28,7 +28,7 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/f1lzz/k8s-lb-controller/internal/provider"
+	"github.com/voronkov44/k8s-lb-controller/internal/provider"
 )
 
 // Provider stores desired Service state in memory and materializes it as an HAProxy config file.

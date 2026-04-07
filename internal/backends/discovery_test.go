@@ -26,7 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 
-	"github.com/f1lzz/k8s-lb-controller/internal/provider"
+	"github.com/voronkov44/k8s-lb-controller/internal/provider"
 )
 
 const testHTTPPortName = "http"

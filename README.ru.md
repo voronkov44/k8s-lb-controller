@@ -267,7 +267,7 @@ bin/kustomize build config/default
 Задеплоить:
 
 ```sh
-make deploy IMG=ghcr.io/f1lzz/k8s-lb-controller:latest
+make deploy IMG=ghcr.io/voronkov44/k8s-lb-controller:latest
 ```
 
 Удалить:

@@ -34,12 +34,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	"github.com/f1lzz/k8s-lb-controller/internal/backends"
-	"github.com/f1lzz/k8s-lb-controller/internal/config"
-	"github.com/f1lzz/k8s-lb-controller/internal/ipam"
-	controllermetrics "github.com/f1lzz/k8s-lb-controller/internal/metrics"
-	"github.com/f1lzz/k8s-lb-controller/internal/provider"
-	servicestatus "github.com/f1lzz/k8s-lb-controller/internal/status"
+	"github.com/voronkov44/k8s-lb-controller/internal/backends"
+	"github.com/voronkov44/k8s-lb-controller/internal/config"
+	"github.com/voronkov44/k8s-lb-controller/internal/ipam"
+	controllermetrics "github.com/voronkov44/k8s-lb-controller/internal/metrics"
+	"github.com/voronkov44/k8s-lb-controller/internal/provider"
+	servicestatus "github.com/voronkov44/k8s-lb-controller/internal/status"
 )
 
 const serviceControllerName = "service"

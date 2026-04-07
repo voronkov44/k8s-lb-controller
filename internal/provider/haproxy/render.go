@@ -23,7 +23,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/f1lzz/k8s-lb-controller/internal/provider"
+	"github.com/voronkov44/k8s-lb-controller/internal/provider"
 )
 
 // Render produces a deterministic HAProxy configuration for the provided Services.

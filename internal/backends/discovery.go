@@ -26,7 +26,7 @@ import (
 	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
-	"github.com/f1lzz/k8s-lb-controller/internal/provider"
+	"github.com/voronkov44/k8s-lb-controller/internal/provider"
 )
 
 // ServicePortBackends contains the discovered backends for a single Service port.

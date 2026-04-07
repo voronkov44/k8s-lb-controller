@@ -68,7 +68,7 @@ spec:
           value: ""
         - name: K8S_LB_CONTROLLER_HAPROXY_RELOAD_COMMAND
           value: ""
-        image: ghcr.io/f1lzz/k8s-lb-controller:latest
+        image: ghcr.io/voronkov44/k8s-lb-controller:latest
         imagePullPolicy: IfNotPresent
         name: manager
         ports:

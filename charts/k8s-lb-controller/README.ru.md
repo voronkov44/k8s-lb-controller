@@ -23,7 +23,7 @@ helm install k8s-lb-controller . -n k8s-lb-controller-system --create-namespace
 
 ```yaml
 image:
-  repository: ghcr.io/f1lzz/k8s-lb-controller
+  repository: ghcr.io/voronkov44/k8s-lb-controller
   tag: "0.1.0"
 
 controller:

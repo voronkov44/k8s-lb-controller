@@ -39,10 +39,10 @@ import (
 	ctrlzap "sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	"github.com/f1lzz/k8s-lb-controller/internal/config"
-	"github.com/f1lzz/k8s-lb-controller/internal/controller"
-	controllermetrics "github.com/f1lzz/k8s-lb-controller/internal/metrics"
-	haproxyprovider "github.com/f1lzz/k8s-lb-controller/internal/provider/haproxy"
+	"github.com/voronkov44/k8s-lb-controller/internal/config"
+	"github.com/voronkov44/k8s-lb-controller/internal/controller"
+	controllermetrics "github.com/voronkov44/k8s-lb-controller/internal/metrics"
+	haproxyprovider "github.com/voronkov44/k8s-lb-controller/internal/provider/haproxy"
 )
 
 var (
@@ -118,7 +118,7 @@ func main() {
 		Metrics:                 metricsserver.Options{BindAddress: cfg.MetricsAddr, SecureServing: false},
 		HealthProbeBindAddress:  cfg.HealthAddr,
 		LeaderElection:          cfg.LeaderElect,
-		LeaderElectionID:        "ed30ec16.diploma.local",
+		LeaderElectionID:        "lbcontroller.voronkov44.dev",
 		GracefulShutdownTimeout: &cfg.GracefulShutdownTimeout,
 	})
 	if err != nil {

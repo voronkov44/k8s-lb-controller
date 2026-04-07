@@ -34,8 +34,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/f1lzz/k8s-lb-controller/internal/config"
-	"github.com/f1lzz/k8s-lb-controller/internal/provider"
+	"github.com/voronkov44/k8s-lb-controller/internal/config"
+	"github.com/voronkov44/k8s-lb-controller/internal/provider"
 )
 
 func TestServiceReconcilerReconcileReturnsEmptyWhenServiceNotFound(t *testing.T) {

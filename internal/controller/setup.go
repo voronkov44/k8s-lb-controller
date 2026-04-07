@@ -21,8 +21,8 @@ import (
 
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	"github.com/f1lzz/k8s-lb-controller/internal/config"
-	"github.com/f1lzz/k8s-lb-controller/internal/provider"
+	"github.com/voronkov44/k8s-lb-controller/internal/config"
+	"github.com/voronkov44/k8s-lb-controller/internal/provider"
 )
 
 // SetupControllers registers all controllers managed by this binary.
