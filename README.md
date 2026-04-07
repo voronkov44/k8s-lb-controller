@@ -38,7 +38,8 @@ Packaged installation is available as an OCI Helm chart:
 ```sh
 helm install k8s-lb-controller oci://ghcr.io/voronkov44/charts/k8s-lb-controller \
   --version 0.1.0 \
-  -n k8s-lb-controller-system --create-namespace
+  -n k8s-lb-controller-system \
+  --create-namespace
 ```
 
 Detailed Helm usage, values, and chart-specific notes are documented in:
@@ -47,7 +48,7 @@ Detailed Helm usage, values, and chart-specific notes are documented in:
 - [charts/k8s-lb-controller/README.ru.md](charts/k8s-lb-controller/README.ru.md)
 
 Kustomize manifests remain available for development, debugging, and manifest-based installation.
-Release artifacts and chart publication are tracked through GitHub Releases.
+Release notes and published artifacts are available in GitHub Releases: [github.com/voronkov44/k8s-lb-controller/releases](https://github.com/voronkov44/k8s-lb-controller/releases).
 
 ## Current MVP Scope
 
