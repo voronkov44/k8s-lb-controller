@@ -4,6 +4,8 @@ This chart installs `k8s-lb-controller`, a lightweight Kubernetes LoadBalancer c
 
 [Русская версия](README.ru.md)
 
+For controller architecture, reconcile behavior, and runtime configuration details, see the repository [README.md](../../README.md).
+
 ## What this chart installs
 
 - A controller `Deployment`
@@ -13,18 +15,21 @@ This chart installs `k8s-lb-controller`, a lightweight Kubernetes LoadBalancer c
 - An optional metrics `Service`
 - An optional `ServiceMonitor`
 
-## Quick install
+## OCI installation
 
-For a checkout of this repository:
+The chart is published as an OCI chart:
+
+`oci://ghcr.io/voronkov44/charts/k8s-lb-controller`
 
 ```bash
-helm install k8s-lb-controller ./charts/k8s-lb-controller \
+helm install k8s-lb-controller oci://ghcr.io/voronkov44/charts/k8s-lb-controller \
+  --version 0.1.0 \
   -n k8s-lb-controller-system --create-namespace
 ```
 
-Override `controller.loadBalancerClass` and `controller.ipPool` before using the chart outside local testing.
+For a checkout of this repository, replace the OCI reference with `./charts/k8s-lb-controller`.
 
-## Example with overridden values
+## Example override values
 
 ```yaml
 controller:
@@ -44,7 +49,8 @@ terminationGracePeriodSeconds: 30
 ```
 
 ```bash
-helm install k8s-lb-controller ./charts/k8s-lb-controller \
+helm install k8s-lb-controller oci://ghcr.io/voronkov44/charts/k8s-lb-controller \
+  --version 0.1.0 \
   -n k8s-lb-controller-system --create-namespace \
   -f values-local.yaml
 ```
@@ -54,8 +60,8 @@ helm install k8s-lb-controller ./charts/k8s-lb-controller \
 | Value | Description |
 | --- | --- |
 | `image.repository`, `image.tag`, `image.pullPolicy` | Controller image settings. |
-| `controller.loadBalancerClass` | Only `Service` objects with this `spec.loadBalancerClass` are managed. |
-| `controller.ipPool` | Static IPv4 pool used for external address allocation. |
+| `controller.loadBalancerClass` | Only `Service` objects with a matching `spec.loadBalancerClass` are managed. |
+| `controller.ipPool` | Static IPv4 pool used for external address allocation. Replace the example addresses before use outside local testing or controlled environments. |
 | `controller.gracefulShutdownTimeout` | Controller manager shutdown timeout. Keep `terminationGracePeriodSeconds` greater than or equal to this value. |
 | `metrics.port` | Single source of truth for the metrics bind port, container port, and metrics `Service` port. |
 | `health.port` | Single source of truth for the health and readiness bind port and probe port. |
@@ -63,16 +69,20 @@ helm install k8s-lb-controller ./charts/k8s-lb-controller \
 | `metrics.serviceMonitor.enabled` | Requests a `ServiceMonitor` when Prometheus Operator CRDs are available. |
 | `resources`, `nodeSelector`, `tolerations`, `affinity` | Standard pod scheduling and resource settings. |
 
-## Scope and limitations
+## Notes
 
 - The controller manages only `Service` objects whose `spec.loadBalancerClass` matches `controller.loadBalancerClass`.
-- The current scope is a static IPv4 pool plus HAProxy provider synchronization. The chart does not add cloud-provider integrations or other controller features that the application does not implement.
-- Review the default example IP pool before use outside local testing or controlled environments.
+- The controller allocates external addresses from the static IPv4 pool configured in `controller.ipPool`.
+- `ServiceMonitor` support is optional. The chart renders it only when `metrics.service.enabled=true`, `metrics.serviceMonitor.enabled=true`, and the target cluster advertises `monitoring.coreos.com/v1`.
 
-## ServiceMonitor
+## Scope and limitations
 
-`ServiceMonitor` support is optional. The chart renders it only when all of the following are true:
+- The chart is intentionally aligned with the current controller behavior: static IPv4 pool allocation plus HAProxy provider synchronization.
+- It does not add cloud-provider integrations or controller features that are not implemented in this repository.
+- The current controller focus is IPv4 and TCP service traffic.
 
-- `metrics.service.enabled=true`
-- `metrics.serviceMonitor.enabled=true`
-- The target cluster advertises `monitoring.coreos.com/v1`
+## Uninstall
+
+```bash
+helm uninstall k8s-lb-controller -n k8s-lb-controller-system
+```

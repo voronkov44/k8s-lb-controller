@@ -6,7 +6,7 @@ Russian version: [README.ru.md](README.ru.md)
 
 ## Overview
 
-`k8s-lb-controller` is a focused controller project built around Kubernetes built-in resources.
+`k8s-lb-controller` is an intentionally scoped controller project built around Kubernetes built-in resources.
 It watches `Service` objects as the primary resource and reacts to related `EndpointSlice` updates.
 
 For matching `Service` objects, the controller:
@@ -27,7 +27,27 @@ Kubernetes defines the `LoadBalancer` service model, but the implementation is a
 In managed clouds, that logic is usually provided by the platform. In local clusters, bare-metal labs, demos, and controlled setups, a smaller controller that makes the behavior explicit can be easier to understand and easier to experiment with.
 
 This repository exists as an intentionally scoped load balancer controller project: compact enough to read end to end, but realistic enough to demonstrate reconcile design, finalizers, status publication, backend discovery, provider integration, testing, and deployment workflow.
-It is meant as a serious public portfolio project and a lightweight controller for learning, demos, and controlled environments, not as a full replacement for systems such as MetalLB or cloud-provider load balancers.
+It is a lightweight controller project and a production-style MVP for learning, demos, and controlled environments, not a replacement for systems such as MetalLB or cloud-provider load balancers.
+
+## Installation
+
+Canonical repository: [github.com/voronkov44/k8s-lb-controller](https://github.com/voronkov44/k8s-lb-controller)
+
+Packaged installation is available as an OCI Helm chart:
+
+```sh
+helm install k8s-lb-controller oci://ghcr.io/voronkov44/charts/k8s-lb-controller \
+  --version 0.1.0 \
+  -n k8s-lb-controller-system --create-namespace
+```
+
+Detailed Helm usage, values, and chart-specific notes are documented in:
+
+- [charts/k8s-lb-controller/README.md](charts/k8s-lb-controller/README.md)
+- [charts/k8s-lb-controller/README.ru.md](charts/k8s-lb-controller/README.ru.md)
+
+Kustomize manifests remain available for development, debugging, and manifest-based installation.
+Release artifacts and chart publication are tracked through GitHub Releases.
 
 ## Current MVP Scope
 
@@ -46,13 +66,13 @@ The repository is feature-complete for the current phase and covers the followin
 - Handles finalizers, deletion, and cleanup when a `Service` is removed or stops matching controller selection.
 - Exposes metrics, health, and readiness endpoints.
 - Includes unit, regression, and end-to-end test coverage.
-- Includes a local development and Kustomize-based deployment flow.
+- Includes Helm chart support, OCI chart distribution, local development flow, and Kustomize-based deployment manifests.
 
-Important current-state constraints:
+Important current-state notes:
 
 - The default runtime provider is aimed at IPv4 and TCP service traffic.
 - The controller focuses on control-plane behavior and provider synchronization.
-- Helm packaging is not implemented in this repository yet.
+- Helm is the recommended packaged installation path, while Kustomize manifests remain useful for development and manifest-oriented workflows.
 
 ## Current Limitations
 
@@ -62,7 +82,6 @@ This is an intentionally scoped controller MVP, and the current repository has a
 - Service selection is driven by a single configured `loadBalancerClass`.
 - The default runtime provider renders a file-based HAProxy configuration.
 - The controller is focused on IPv4 and TCP service traffic.
-- Installation is currently Kustomize-based; Helm packaging is planned separately and is not part of the current repository state.
 
 ## How to Use It
 
@@ -72,41 +91,16 @@ This controller fits best in environments where you want a small, explicit imple
 - bare-metal or lab environments with a controlled external IP pool
 - educational setups where the controller logic should remain easy to inspect
 
-The current installation flow is Kustomize-based.
-Today, the practical usage pattern is:
+At a high level, the usage pattern is:
 
-1. Deploy the controller using the manifests in `config/default` or the matching `make` targets.
-2. Configure the controller with the `loadBalancerClass` and static IP pool you want it to manage.
+1. Install the controller with the OCI Helm chart or the Kustomize manifests in this repository.
+2. Configure the `loadBalancerClass` and static IP pool you want it to manage.
 3. Create a `Service` with `spec.type: LoadBalancer`.
 4. Set `spec.loadBalancerClass` to the same value the controller is configured to watch.
 5. Let the controller allocate an address from the configured pool, discover backends from `EndpointSlice`, sync provider state, and publish the selected address into `.status.loadBalancer.ingress`.
 
-With the current repository state, a minimal in-cluster flow looks like this:
-
-```sh
-make docker-build IMG=k8s-lb-controller:dev
-kind load docker-image k8s-lb-controller:dev --name k8s-lb-controller
-make deploy IMG=k8s-lb-controller:dev
-```
-
-And a minimal managed `Service` looks like this:
-
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: demo
-spec:
-  type: LoadBalancer
-  loadBalancerClass: iedge.local/service-lb
-  selector:
-    app: demo
-  ports:
-    - port: 80
-      targetPort: 80
-```
-
-Helm packaging should be documented separately once the chart actually exists and is published.
+For packaged installation, use the Helm command shown above.
+For manifest-based and development workflows, use the Kustomize path described below.
 
 ## Architecture
 
@@ -127,6 +121,7 @@ config/default/                Kustomize deployment entrypoint
 config/manager/                Controller Deployment manifest
 config/rbac/                   Service account and RBAC
 config/prometheus/             Optional ServiceMonitor manifest
+charts/k8s-lb-controller/      Helm chart and values schema
 test/e2e/                      Kind-based end-to-end tests
 ```
 
@@ -162,6 +157,8 @@ This ordering matters: provider synchronization happens before status publicatio
 The binary is configured through environment variables.
 When `.env` exists, it is loaded without overriding values that are already set in the environment.
 This keeps local development convenient while leaving CI and deployment configuration explicit.
+
+The Helm chart exposes these settings through chart values; see [charts/k8s-lb-controller/README.md](charts/k8s-lb-controller/README.md) for Helm-specific guidance.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -234,7 +231,7 @@ Notes:
 
 ### In-Cluster Development Flow
 
-If you want to run the controller as a Deployment inside the cluster:
+If you want to run the controller as a `Deployment` inside the cluster:
 
 ```sh
 make docker-build IMG=k8s-lb-controller:dev
@@ -246,16 +243,22 @@ This path is close to what the e2e tests exercise.
 
 ## Deployment / Manifests
 
-The current installation flow is Kustomize-based.
+The repository supports two installation paths:
+
+- Helm chart for packaged installation and distribution
+- Kustomize manifests for development, debugging, and manifest-based installs
+
+For detailed Helm usage, values, and chart-specific notes, see [charts/k8s-lb-controller/README.md](charts/k8s-lb-controller/README.md).
+
+The Kustomize resources in this repository are organized as follows:
 
 - `config/default` is the main deployment entrypoint.
-- `config/manager` contains the controller Deployment.
+- `config/manager` contains the controller `Deployment`.
 - `config/rbac` contains the service account and minimal RBAC for `Service` and `EndpointSlice`.
 - `config/default/metrics_service.yaml` exposes the metrics endpoint internally.
 - `config/prometheus/monitor.yaml` contains an optional `ServiceMonitor` for clusters that already have Prometheus Operator CRDs.
 
 The `ServiceMonitor` stays optional because not every cluster has Prometheus Operator CRDs installed.
-Helm installation is not documented here because Helm packaging is not part of the current repository state.
 
 Render the default install set with the repo-local Kustomize tool:
 
@@ -305,7 +308,7 @@ spec:
 
 ## Testing
 
-Testing is one of the stronger parts of the repository in its current state.
+The current repository state includes unit, regression, and end-to-end tests.
 
 - `make lint` runs `golangci-lint`.
 - `make test` runs the non-e2e Go test suite with envtest assets and writes `cover.out`.
