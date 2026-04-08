@@ -74,6 +74,10 @@ func TestLoadDefaults(t *testing.T) {
 		t.Fatalf("LogLevel = %q, want %q", cfg.LogLevel, DefaultLogLevel)
 	}
 
+	if cfg.ProviderMode != DefaultProviderMode {
+		t.Fatalf("ProviderMode = %q, want %q", cfg.ProviderMode, DefaultProviderMode)
+	}
+
 	if cfg.HAProxyConfigPath != DefaultHAProxyConfigPath {
 		t.Fatalf("HAProxyConfigPath = %q, want %q", cfg.HAProxyConfigPath, DefaultHAProxyConfigPath)
 	}
@@ -84,6 +88,14 @@ func TestLoadDefaults(t *testing.T) {
 
 	if cfg.HAProxyReloadCommand != DefaultHAProxyReloadCommand {
 		t.Fatalf("HAProxyReloadCommand = %q, want %q", cfg.HAProxyReloadCommand, DefaultHAProxyReloadCommand)
+	}
+
+	if cfg.DataplaneAPIURL != "" {
+		t.Fatalf("DataplaneAPIURL = %q, want empty string", cfg.DataplaneAPIURL)
+	}
+
+	if cfg.DataplaneAPITimeout != DefaultDataplaneAPITimeout {
+		t.Fatalf("DataplaneAPITimeout = %s, want %s", cfg.DataplaneAPITimeout, DefaultDataplaneAPITimeout)
 	}
 }
 
@@ -98,9 +110,11 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv(EnvRequeueAfter, "45s")
 	t.Setenv(EnvGracefulShutdownTimeout, "20s")
 	t.Setenv(EnvLogLevel, "DEBUG")
+	t.Setenv(EnvProviderMode, string(ProviderModeLocalHAProxy))
 	t.Setenv(EnvHAProxyConfigPath, "/var/run/haproxy/controller.cfg")
 	t.Setenv(EnvHAProxyValidateCommand, "haproxy -c -f {{config}}")
 	t.Setenv(EnvHAProxyReloadCommand, "service haproxy reload")
+	t.Setenv(EnvDataplaneAPITimeout, "12s")
 
 	cfg, err := Load()
 	if err != nil {
@@ -144,6 +158,10 @@ func TestLoadOverrides(t *testing.T) {
 		t.Fatalf("LogLevel = %q, want %q", cfg.LogLevel, LogLevelDebug)
 	}
 
+	if cfg.ProviderMode != ProviderModeLocalHAProxy {
+		t.Fatalf("ProviderMode = %q, want %q", cfg.ProviderMode, ProviderModeLocalHAProxy)
+	}
+
 	if cfg.HAProxyConfigPath != "/var/run/haproxy/controller.cfg" {
 		t.Fatalf("HAProxyConfigPath = %q, want %q", cfg.HAProxyConfigPath, "/var/run/haproxy/controller.cfg")
 	}
@@ -155,12 +173,81 @@ func TestLoadOverrides(t *testing.T) {
 	if cfg.HAProxyReloadCommand != "service haproxy reload" {
 		t.Fatalf("HAProxyReloadCommand = %q, want %q", cfg.HAProxyReloadCommand, "service haproxy reload")
 	}
+
+	if cfg.DataplaneAPIURL != "" {
+		t.Fatalf("DataplaneAPIURL = %q, want empty string", cfg.DataplaneAPIURL)
+	}
+
+	if cfg.DataplaneAPITimeout != 12*time.Second {
+		t.Fatalf("DataplaneAPITimeout = %s, want %s", cfg.DataplaneAPITimeout, 12*time.Second)
+	}
 }
 
 func TestLoadRejectsInvalidValues(t *testing.T) {
 	setConfigEnvToEmpty(t)
 
 	t.Setenv(EnvLeaderElect, "not-a-bool")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() error = nil, want non-nil")
+	}
+}
+
+func TestLoadDataplaneAPIProviderMode(t *testing.T) {
+	setConfigEnvToEmpty(t)
+	t.Setenv(EnvProviderMode, string(ProviderModeDataplaneAPI))
+	t.Setenv(EnvDataplaneAPIURL, "https://dataplane.example.local:8443/api/v1")
+	t.Setenv(EnvDataplaneAPITimeout, "7s")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if cfg.ProviderMode != ProviderModeDataplaneAPI {
+		t.Fatalf("ProviderMode = %q, want %q", cfg.ProviderMode, ProviderModeDataplaneAPI)
+	}
+
+	if cfg.DataplaneAPIURL != "https://dataplane.example.local:8443/api/v1" {
+		t.Fatalf("DataplaneAPIURL = %q, want %q", cfg.DataplaneAPIURL, "https://dataplane.example.local:8443/api/v1")
+	}
+
+	if cfg.DataplaneAPITimeout != 7*time.Second {
+		t.Fatalf("DataplaneAPITimeout = %s, want %s", cfg.DataplaneAPITimeout, 7*time.Second)
+	}
+}
+
+func TestLoadRejectsDataplaneAPIModeWithoutURL(t *testing.T) {
+	setConfigEnvToEmpty(t)
+	t.Setenv(EnvProviderMode, string(ProviderModeDataplaneAPI))
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() error = nil, want non-nil")
+	}
+}
+
+func TestLoadRejectsInvalidDataplaneAPITimeout(t *testing.T) {
+	setConfigEnvToEmpty(t)
+	t.Setenv(EnvDataplaneAPITimeout, "not-a-duration")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() error = nil, want non-nil")
+	}
+}
+
+func TestLoadRejectsInvalidDataplaneAPIURL(t *testing.T) {
+	setConfigEnvToEmpty(t)
+	t.Setenv(EnvProviderMode, string(ProviderModeDataplaneAPI))
+	t.Setenv(EnvDataplaneAPIURL, "://bad-url")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() error = nil, want non-nil")
+	}
+}
+
+func TestLoadRejectsInvalidProviderMode(t *testing.T) {
+	setConfigEnvToEmpty(t)
+	t.Setenv(EnvProviderMode, "invalid-mode")
 
 	if _, err := Load(); err == nil {
 		t.Fatal("Load() error = nil, want non-nil")
@@ -344,9 +431,12 @@ func setConfigEnvToEmpty(t *testing.T) {
 	t.Setenv(EnvRequeueAfter, "")
 	t.Setenv(EnvGracefulShutdownTimeout, "")
 	t.Setenv(EnvLogLevel, "")
+	t.Setenv(EnvProviderMode, "")
 	t.Setenv(EnvHAProxyConfigPath, "")
 	t.Setenv(EnvHAProxyValidateCommand, "")
 	t.Setenv(EnvHAProxyReloadCommand, "")
+	t.Setenv(EnvDataplaneAPIURL, "")
+	t.Setenv(EnvDataplaneAPITimeout, "")
 }
 
 func unsetConfigEnv(t *testing.T) {
@@ -361,9 +451,12 @@ func unsetConfigEnv(t *testing.T) {
 		EnvRequeueAfter,
 		EnvGracefulShutdownTimeout,
 		EnvLogLevel,
+		EnvProviderMode,
 		EnvHAProxyConfigPath,
 		EnvHAProxyValidateCommand,
 		EnvHAProxyReloadCommand,
+		EnvDataplaneAPIURL,
+		EnvDataplaneAPITimeout,
 	}
 
 	saved := make(map[string]*string, len(keys))
