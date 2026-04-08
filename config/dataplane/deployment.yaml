@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dataplane
+  namespace: system
+  labels:
+    control-plane: dataplane
+    app.kubernetes.io/name: k8s-lb-controller
+    app.kubernetes.io/component: dataplane
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      control-plane: dataplane
+      app.kubernetes.io/name: k8s-lb-controller
+      app.kubernetes.io/component: dataplane
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: dataplane
+      labels:
+        control-plane: dataplane
+        app.kubernetes.io/name: k8s-lb-controller
+        app.kubernetes.io/component: dataplane
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - command:
+        - /dataplane
+        env:
+        - name: K8S_LB_DATAPLANE_HTTP_ADDR
+          value: ":8090"
+        - name: K8S_LB_DATAPLANE_HAPROXY_CONFIG_PATH
+          value: "/var/run/k8s-lb-dataplane/haproxy.cfg"
+        - name: K8S_LB_DATAPLANE_HAPROXY_VALIDATE_COMMAND
+          value: ""
+        - name: K8S_LB_DATAPLANE_HAPROXY_RELOAD_COMMAND
+          value: ""
+        - name: K8S_LB_DATAPLANE_LOG_LEVEL
+          value: "info"
+        - name: K8S_LB_DATAPLANE_GRACEFUL_SHUTDOWN_TIMEOUT
+          value: "15s"
+        image: ghcr.io/voronkov44/k8s-lb-controller-dataplane:latest
+        imagePullPolicy: IfNotPresent
+        name: dataplane
+        ports:
+        - containerPort: 8090
+          name: http
+          protocol: TCP
+        securityContext:
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - "ALL"
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: 250m
+            memory: 128Mi
+          requests:
+            cpu: 10m
+            memory: 64Mi
+        volumeMounts:
+        - mountPath: /var/run/k8s-lb-dataplane
+          name: runtime-dir
+      terminationGracePeriodSeconds: 20
+      volumes:
+      - emptyDir: {}
+        name: runtime-dir

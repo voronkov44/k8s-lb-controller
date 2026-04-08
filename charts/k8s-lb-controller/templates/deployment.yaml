@@ -56,12 +56,20 @@ spec:
               value: {{ .Values.controller.gracefulShutdownTimeout | quote }}
             - name: K8S_LB_CONTROLLER_LOG_LEVEL
               value: {{ .Values.controller.logLevel | quote }}
+            - name: K8S_LB_CONTROLLER_PROVIDER_MODE
+              value: {{ .Values.controller.providerMode | quote }}
             - name: K8S_LB_CONTROLLER_HAPROXY_CONFIG_PATH
               value: {{ .Values.controller.haproxy.configPath | quote }}
             - name: K8S_LB_CONTROLLER_HAPROXY_VALIDATE_COMMAND
               value: {{ .Values.controller.haproxy.validateCommand | quote }}
             - name: K8S_LB_CONTROLLER_HAPROXY_RELOAD_COMMAND
               value: {{ .Values.controller.haproxy.reloadCommand | quote }}
+            {{- if eq .Values.controller.providerMode "dataplane-api" }}
+            - name: K8S_LB_CONTROLLER_DATAPLANE_API_URL
+              value: {{ include "k8s-lb-controller.controllerDataplaneAPIURL" . | quote }}
+            - name: K8S_LB_CONTROLLER_DATAPLANE_API_TIMEOUT
+              value: {{ .Values.controller.dataplane.apiTimeout | quote }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

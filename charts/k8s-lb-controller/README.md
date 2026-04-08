@@ -1,95 +1,145 @@
 # k8s-lb-controller Helm Chart
 
-This chart installs `k8s-lb-controller`, a lightweight Kubernetes LoadBalancer controller that assigns external IPv4 addresses from a static pool and syncs HAProxy state for matching `Service` objects.
+This chart installs `k8s-lb-controller` and supports both deployment modes introduced by the repository:
+
+- `local-haproxy`: controller-only mode, still the default
+- `dataplane-api`: controller + standalone dataplane server mode
 
 [Русская версия](README.ru.md)
 
-For controller architecture, reconcile behavior, and runtime configuration details, see the repository [README.md](../../README.md).
+Repository-level architecture and rollout context are documented in [README.md](../../README.md).
 
-## What this chart installs
+## What The Chart Installs
 
-- A controller `Deployment`
-- A `ServiceAccount`
-- RBAC for watching and updating managed `Service` objects
-- Leader-election `Role` and `RoleBinding`
-- An optional metrics `Service`
-- An optional `ServiceMonitor`
+Always:
 
-## OCI installation
+- controller `Deployment`
+- `ServiceAccount`
+- RBAC for `Service`, `Service/status`, and `EndpointSlice`
+- leader-election `Role` and `RoleBinding`
+- optional metrics `Service`
+- optional `ServiceMonitor`
 
-The chart is published as an OCI chart:
+When `dataplane.enabled=true`:
+
+- dataplane `Deployment`
+- dataplane `Service`
+
+## Installation
+
+OCI chart reference:
 
 `oci://ghcr.io/voronkov44/charts/k8s-lb-controller`
+
+### Local Mode
 
 ```bash
 helm install k8s-lb-controller oci://ghcr.io/voronkov44/charts/k8s-lb-controller \
   --version 0.1.0 \
-<<<<<<< HEAD
-  -n k8s-lb-controller-system --create-namespace
-=======
   -n k8s-lb-controller-system \
   --create-namespace
->>>>>>> main
+```
+
+### Dataplane Mode
+
+```bash
+helm install k8s-lb-controller oci://ghcr.io/voronkov44/charts/k8s-lb-controller \
+  --version 0.1.0 \
+  -n k8s-lb-controller-system \
+  --create-namespace \
+  --set controller.providerMode=dataplane-api \
+  --set dataplane.enabled=true
 ```
 
 For a checkout of this repository, replace the OCI reference with `./charts/k8s-lb-controller`.
 
-## Example override values
+## Important Values
+
+### Controller Values
+
+| Value | Description |
+| --- | --- |
+| `image.repository`, `image.tag`, `image.pullPolicy` | Controller image settings. |
+| `controller.providerMode` | `local-haproxy` or `dataplane-api`. |
+| `controller.loadBalancerClass` | Managed `spec.loadBalancerClass`. |
+| `controller.ipPool` | Static IPv4 pool used for external address allocation. |
+| `controller.dataplane.apiURL` | Optional explicit dataplane API URL override. |
+| `controller.dataplane.apiTimeout` | Controller-side timeout for dataplane API requests. |
+| `controller.haproxy.*` | Local HAProxy provider settings used in `local-haproxy` mode. |
+
+### Dataplane Values
+
+| Value | Description |
+| --- | --- |
+| `dataplane.enabled` | Enables the dataplane Deployment and Service. |
+| `dataplane.image.repository`, `dataplane.image.tag`, `dataplane.image.pullPolicy` | Dataplane image settings. |
+| `dataplane.http.port` | ClusterIP Service port and container port for the dataplane API. |
+| `dataplane.http.addr` | Optional explicit `K8S_LB_DATAPLANE_HTTP_ADDR`; when empty the chart derives it from `dataplane.http.port`. |
+| `dataplane.haproxy.configPath` | Dataplane HAProxy config file path. |
+| `dataplane.haproxy.validateCommand` | Optional HAProxy validation command. |
+| `dataplane.haproxy.reloadCommand` | Optional HAProxy reload command. |
+| `dataplane.logLevel` | Dataplane log verbosity. |
+| `dataplane.resources`, `dataplane.nodeSelector`, `dataplane.tolerations`, `dataplane.affinity` | Standard pod scheduling and resource settings for the dataplane pod. |
+
+## URL Wiring
+
+When:
+
+- `controller.providerMode=dataplane-api`
+- `dataplane.enabled=true`
+- `controller.dataplane.apiURL` is empty
+
+the chart generates the controller dataplane URL automatically as:
+
+`http://<release>-k8s-lb-controller-dataplane.<namespace>.svc:<dataplane.http.port>`
+
+If `controller.dataplane.apiURL` is set explicitly, that value overrides the generated in-cluster service URL.
+
+## Example Values
+
+### Local Mode
 
 ```yaml
 controller:
+  providerMode: local-haproxy
   loadBalancerClass: lab.local/service-lb
   ipPool:
     - 10.0.0.240
     - 10.0.0.241
     - 10.0.0.242
-  gracefulShutdownTimeout: 20s
-
-metrics:
-  port: 9090
-  serviceMonitor:
-    enabled: true
-
-terminationGracePeriodSeconds: 30
 ```
 
-```bash
-helm install k8s-lb-controller oci://ghcr.io/voronkov44/charts/k8s-lb-controller \
-  --version 0.1.0 \
-<<<<<<< HEAD
-  -n k8s-lb-controller-system --create-namespace \
-=======
-  -n k8s-lb-controller-system \
-  --create-namespace \
->>>>>>> main
-  -f values-local.yaml
+### Dataplane Mode
+
+```yaml
+controller:
+  providerMode: dataplane-api
+  dataplane:
+    apiTimeout: 10s
+
+dataplane:
+  enabled: true
+  http:
+    port: 8090
+  haproxy:
+    configPath: /var/run/k8s-lb-dataplane/haproxy.cfg
 ```
-
-## Important values
-
-| Value | Description |
-| --- | --- |
-| `image.repository`, `image.tag`, `image.pullPolicy` | Controller image settings. |
-| `controller.loadBalancerClass` | Only `Service` objects with a matching `spec.loadBalancerClass` are managed. |
-| `controller.ipPool` | Static IPv4 pool used for external address allocation. Replace the example addresses before use outside local testing or controlled environments. |
-| `controller.gracefulShutdownTimeout` | Controller manager shutdown timeout. Keep `terminationGracePeriodSeconds` greater than or equal to this value. |
-| `metrics.port` | Single source of truth for the metrics bind port, container port, and metrics `Service` port. |
-| `health.port` | Single source of truth for the health and readiness bind port and probe port. |
-| `metrics.service.enabled` | Enables the metrics `Service`. |
-| `metrics.serviceMonitor.enabled` | Requests a `ServiceMonitor` when Prometheus Operator CRDs are available. |
-| `resources`, `nodeSelector`, `tolerations`, `affinity` | Standard pod scheduling and resource settings. |
 
 ## Notes
 
-- The controller manages only `Service` objects whose `spec.loadBalancerClass` matches `controller.loadBalancerClass`.
-- The controller allocates external addresses from the static IPv4 pool configured in `controller.ipPool`.
-- `ServiceMonitor` support is optional. The chart renders it only when `metrics.service.enabled=true`, `metrics.serviceMonitor.enabled=true`, and the target cluster advertises `monitoring.coreos.com/v1`.
+- Local mode remains available and is still the chart default.
+- Dataplane mode deploys only the dataplane API server process at this stage.
+- The chart does not yet add host networking, interface IP attachment, netlink integration, or real external traffic publication.
+- `ServiceMonitor` support remains optional and is rendered only when the existing metrics settings enable it.
 
-## Scope and limitations
+## Verification
 
-- The chart is intentionally aligned with the current controller behavior: static IPv4 pool allocation plus HAProxy provider synchronization.
-- It does not add cloud-provider integrations or controller features that are not implemented in this repository.
-- The current controller focus is IPv4 and TCP service traffic.
+```bash
+helm lint ./charts/k8s-lb-controller
+helm lint ./charts/k8s-lb-controller --set controller.providerMode=dataplane-api --set dataplane.enabled=true
+helm template k8s-lb-controller ./charts/k8s-lb-controller
+helm template k8s-lb-controller ./charts/k8s-lb-controller --set controller.providerMode=dataplane-api --set dataplane.enabled=true
+```
 
 ## Uninstall
 

@@ -1,344 +1,213 @@
 # k8s-lb-controller
 
-Kubernetes-контроллер на базе `controller-runtime`, который управляет выбранными `Service` типа `LoadBalancer`: выделяет внешний IP из статического пула, находит backend-адреса через `EndpointSlice` и синхронизирует требуемое состояние через слой провайдера.
+`k8s-lb-controller` — Kubernetes-контроллер на базе `controller-runtime`, который управляет выбранными `Service` типа `LoadBalancer`.
+Он выделяет внешние IPv4-адреса из статического пула, находит ready backend-адреса через `EndpointSlice` и синхронизирует требуемое состояние через provider abstraction.
 
 English version: [README.md](README.md)
 
-## Обзор
+## Текущий Объём Работ
 
-`k8s-lb-controller` — намеренно ограниченный по объёму контроллерный проект, построенный вокруг встроенных Kubernetes-ресурсов.
-В качестве основного ресурса он отслеживает `Service`, а изменения связанных `EndpointSlice` использует для повторного reconcile соответствующего сервиса.
+Сейчас репозиторий поддерживает два runtime-режима провайдера для контроллера:
 
-Для подходящих `Service` контроллер:
+- `local-haproxy`: исходный локальный файловый HAProxy provider, он по-прежнему используется по умолчанию
+- `dataplane-api`: контроллер отправляет desired state в отдельный dataplane HTTP API
 
-- обрабатывает только объекты с `spec.type: LoadBalancer`
-- фильтрует их по настроенному `spec.loadBalancerClass`
-- выделяет или переиспользует внешний IPv4-адрес из статического пула
-- публикует этот адрес в `.status.loadBalancer.ingress`
-- находит ready IPv4 backend-адреса через `EndpointSlice`
-- формирует целевое состояние для провайдера и применяет его через абстракцию провайдера
+Отдельный dataplane-компонент реализован в `cmd/dataplane`.
+Он хранит полное desired state в памяти, рендерит один детерминированный HAProxy config для всех управляемых сервисов и применяет его атомарно.
 
-В текущем MVP runtime-провайдер файловый и рендерит детерминированный HAProxy config.
-Такой подход позволяет показать реальную control-plane логику, не пряча её за интеграцией с облачным провайдером или собственным API.
+Важное ограничение текущей стадии:
 
-## Зачем Нужен Этот Проект
+- Stage 3 добавляет образы, Kustomize и Helm wiring для отдельного dataplane-компонента.
+- На этой стадии ещё нет host-side IP attachment, bind-unbind логики, netlink-интеграции и полного external traffic publication semantics.
 
-Kubernetes задаёт модель `LoadBalancer`-сервиса, но конкретная реализация всегда зависит от окружения.
-В managed-cloud среде эта логика обычно скрыта внутри платформы. В локальных кластерах, bare-metal лабораториях, demo-сценариях и контролируемых окружениях гораздо полезнее иметь компактный контроллер, в котором это поведение явно видно.
+## Режимы Развёртывания
 
-Этот репозиторий сделан как намеренно ограниченный проект Kubernetes-контроллера: достаточно компактный, чтобы его можно было быстро прочитать, и при этом достаточно серьёзный, чтобы показать проектирование reconcile-циклов, работу с finalizer, публикацию статуса, backend discovery, интеграцию с провайдером, тестирование и deployment workflow.
-Это лёгкий контроллерный проект и production-style MVP для обучения, demo и контролируемых окружений, а не полная замена системам уровня MetalLB или облачных load balancer-реализаций.
+### Local Mode
 
-## Установка
+Local mode сохраняет исходное поведение:
 
-Канонический публичный репозиторий: [github.com/voronkov44/k8s-lb-controller](https://github.com/voronkov44/k8s-lb-controller)
+- запускается только контроллер
+- provider mode равен `local-haproxy`
+- HAProxy config пишет сам контроллер
 
-Для пакетной установки поддерживается OCI chart для Helm:
+Этот режим остаётся режимом по умолчанию в коде, Kustomize и Helm.
 
-```sh
-helm install k8s-lb-controller oci://ghcr.io/voronkov44/charts/k8s-lb-controller \
-  --version 0.1.0 \
-<<<<<<< HEAD
-  -n k8s-lb-controller-system --create-namespace
-=======
-  -n k8s-lb-controller-system \
-  --create-namespace
->>>>>>> main
+### Dataplane Mode
+
+Dataplane mode разворачивает два компонента:
+
+- контроллер как control-plane компонент
+- dataplane server как отдельный in-cluster HTTP API
+
+В этом режиме:
+
+- контроллер использует `K8S_LB_CONTROLLER_PROVIDER_MODE=dataplane-api`
+- контроллер отправляет `PUT /services/{namespace}/{name}` и `DELETE /services/{namespace}/{name}` в dataplane service
+- dataplane хранит все сервисы в памяти и рендерит/применяет один aggregate HAProxy config
+
+## Структура Репозитория
+
+```text
+cmd/main.go                      Бинарь контроллера
+cmd/dataplane/main.go            Бинарь dataplane
+internal/config/                 Runtime-конфигурация контроллера
+internal/dataplane/              Reusable dataplane engine, HTTP handler, render/apply logic
+internal/controller/             Логика reconcile для Service
+internal/ipam/                   Выделение адресов из статического IPv4-пула
+internal/backends/               Backend discovery по EndpointSlice
+internal/provider/               Provider interface и provider implementations
+internal/provider/haproxy/       Локальный файловый HAProxy provider
+config/default/                  Kustomize entrypoint для controller-only local mode
+config/dataplane/                Manifest Deployment и Service для dataplane
+config/default-dataplane/        Kustomize entrypoint для controller + dataplane mode
+charts/k8s-lb-controller/        Helm chart
 ```
 
-Подробная документация по Helm, значения chart и связанные примечания описаны в:
+## Build Targets
+
+В репозитории теперь есть отдельные build path для обоих бинарей и обоих образов:
+
+```sh
+make build
+make build-dataplane
+make docker-build
+make docker-build-dataplane
+```
+
+Полезные deployment-oriented target:
+
+```sh
+make deploy
+make deploy-dataplane
+make build-installer
+make build-installer-dataplane
+```
+
+## Kustomize
+
+Старый controller-only Kustomize entrypoint сохранён без изменений:
+
+- local mode: `config/default`
+
+Также добавлен отдельный additive entrypoint для controller + dataplane mode:
+
+- dataplane mode: `config/default-dataplane`
+
+### Рендер Local Mode
+
+```sh
+./bin/kustomize build config/default
+```
+
+### Рендер Dataplane Mode
+
+```sh
+./bin/kustomize build config/default-dataplane
+```
+
+### Деплой Local Mode
+
+```sh
+make deploy IMG=ghcr.io/voronkov44/k8s-lb-controller:dev
+```
+
+### Деплой Dataplane Mode
+
+```sh
+make deploy-dataplane \
+  IMG=ghcr.io/voronkov44/k8s-lb-controller:dev \
+  DATAPLANE_IMG=ghcr.io/voronkov44/k8s-lb-controller-dataplane:dev
+```
+
+В dataplane Kustomize entrypoint контроллер привязан к in-cluster service URL:
+
+`http://k8s-lb-controller-dataplane.k8s-lb-controller-system.svc:8090`
+
+## Helm
+
+Helm chart поддерживает оба режима и не удаляет local mode.
+
+Подробная документация по chart:
 
 - [charts/k8s-lb-controller/README.md](charts/k8s-lb-controller/README.md)
 - [charts/k8s-lb-controller/README.ru.md](charts/k8s-lb-controller/README.ru.md)
 
-Kustomize-манифесты остаются доступным вариантом для разработки, отладки и установки через манифесты.
-<<<<<<< HEAD
-Публикация chart и релизные артефакты отслеживаются через GitHub Releases.
-=======
-Примечания к релизам и опубликованные артефакты доступны на странице GitHub Releases: [github.com/voronkov44/k8s-lb-controller/releases](https://github.com/voronkov44/k8s-lb-controller/releases).
->>>>>>> main
-
-## Что Входит В Текущий MVP
-
-Репозиторий завершён по функциональности для текущей фазы и включает следующее:
-
-- `Service` используется как основной объект reconcile.
-- Связанные `EndpointSlice` отслеживаются и приводят к повторному reconcile владельца.
-- Обрабатываются только `Service` с `type: LoadBalancer`.
-- Управляемые объекты фильтруются по настроенному `loadBalancerClass`.
-- Внешние IPv4-адреса выделяются из статического конфигурируемого пула.
-- Уже назначенный валидный адрес переиспользуется, если это возможно.
-- Выбранный адрес публикуется в статус `Service`.
-- Backend-адреса определяются по ready IPv4 endpoints из `EndpointSlice`.
-- Целевое состояние синхронизируется через абстракцию провайдера.
-- В runtime binary используется файловый HAProxy provider.
-- Поддержаны finalizer, deletion flow и cleanup на случай, когда `Service` удаляется или перестаёт соответствовать критериям контроллера.
-- Экспортируются metrics, health и readiness endpoints.
-- Есть unit-, regression- и end-to-end тесты.
-- Есть Helm chart, OCI-публикация, локальный сценарий разработки и Kustomize-манифесты для деплоя.
-
-Важные замечания о текущем состоянии:
-
-- runtime-провайдер ориентирован на IPv4 и TCP-трафик
-- контроллер сфокусирован на control-plane поведении и provider synchronization
-- Helm — рекомендуемый путь пакетной установки, а Kustomize-манифесты остаются полезными для разработки и работы с манифестами
-
-## Текущие Ограничения
-
-Это намеренно ограниченный MVP-контроллер, и у текущего репозитория есть несколько важных границ:
-
-- Выделение адресов основано на заранее настроенном статическом IPv4-пуле.
-- Выбор управляемых `Service` идёт по одному настроенному `loadBalancerClass`.
-- Runtime-провайдер по умолчанию рендерит файловый HAProxy config.
-- Контроллер сфокусирован на IPv4 и TCP-трафике.
-
-## Как Использовать
-
-Этот контроллер лучше всего подходит для сценариев, где нужна небольшая и прозрачная реализация поведения `LoadBalancer`:
-
-- локальные кластеры для разработки и demo
-- bare-metal или лабораторные окружения со статическим пулом внешних адресов
-- учебные и исследовательские сценарии, где важно быстро понять логику контроллера
-
-На практике использование выглядит так:
-
-1. Установить контроллер через OCI Helm chart или Kustomize-манифесты из этого репозитория.
-2. Настроить `loadBalancerClass` и статический пул IP-адресов, которыми контроллер должен управлять.
-3. Создать `Service` с `spec.type: LoadBalancer`.
-4. Указать в `spec.loadBalancerClass` то же значение, которое настроено у контроллера.
-5. Дать контроллеру выделить адрес из пула, найти backend-адреса через `EndpointSlice`, синхронизировать состояние провайдера и опубликовать выбранный адрес в `.status.loadBalancer.ingress`.
-
-Для пакетной установки используйте Helm-команду выше.
-Для установки через манифесты и сценариев разработки используйте Kustomize-путь ниже.
-
-## Архитектура
-
-Репозиторий намеренно остаётся компактным.
-Основные части проекта выглядят так:
-
-```text
-cmd/main.go                    Запуск manager и wiring
-internal/config/               Загрузка runtime-конфигурации
-internal/controller/           Логика reconcile и watches
-internal/ipam/                 Парсинг и выделение адресов из статического пула
-internal/backends/             Backend discovery по EndpointSlice
-internal/provider/             Provider interface и in-memory mock для тестов
-internal/provider/haproxy/     Файловый HAProxy provider
-internal/status/               Хелперы для публикации Service status
-internal/metrics/              Custom Prometheus metrics
-config/default/                Основной Kustomize entrypoint
-config/manager/                Manifest Deployment контроллера
-config/rbac/                   Service account и RBAC
-config/prometheus/             Optional ServiceMonitor
-charts/k8s-lb-controller/      Helm chart и схема values
-test/e2e/                      End-to-end тесты на базе Kind
-```
-
-С архитектурной точки зрения проект разделяет обязанности control plane Kubernetes и детали реализации провайдера:
-
-- `internal/controller` определяет, управляется ли `Service`, и ведёт reconcile.
-- `internal/ipam` отвечает за детерминированное выделение адресов из статического пула.
-- `internal/backends` преобразует данные `EndpointSlice` в backend-адреса для слоя провайдера.
-- `internal/provider` задаёт границу абстракции.
-- `internal/provider/haproxy` материализует целевое состояние в виде HAProxy config file.
-- `internal/status` обновляет `Service` status только при реальных изменениях.
-
-Такое разделение делает reconcile loop читаемым и при этом оставляет в проекте реальные обязанности контроллера.
-
-## Как Проходит Reconcile
-
-Для подходящего `Service` цикл reconcile выполняет следующие шаги:
-
-1. Считывает `Service`.
-2. Если объект находится в deletion flow, очищает provider state и снимает finalizer.
-3. Если объект больше не соответствует критериям контроллера, очищает ранее управляемое состояние, при необходимости очищает status и снимает finalizer.
-4. Гарантирует наличие finalizer у контроллера.
-5. Читает релевантные `Service` и выделяет или переиспользует IP из настроенного пула.
-6. Читает связанные `EndpointSlice` и находит ready IPv4 backends.
-7. Строит provider model и вызывает `provider.Ensure`.
-8. Публикует выбранный внешний IP в `.status.loadBalancer.ingress`.
-9. Возвращает requeue только в случае, когда управляемый `Service` временно не может получить свободный IP из пула.
-
-Порядок здесь принципиален: provider synchronization выполняется до публикации статуса, а cleanup path явно разделён для deletion и для случая, когда объект больше не является managed.
-
-## Конфигурация
-
-Приложение настраивается через переменные окружения.
-Если рядом есть `.env`, он загружается без перезаписи уже установленных переменных окружения.
-Это удобно для локальной разработки и при этом не мешает явной конфигурации в CI или deployment manifests.
-
-Helm chart отображает эти настройки через values; подробности по Helm вынесены в [charts/k8s-lb-controller/README.ru.md](charts/k8s-lb-controller/README.ru.md).
-
-| Variable | Default | Назначение |
-| --- | --- | --- |
-| `K8S_LB_CONTROLLER_METRICS_ADDR` | `:8080` | Адрес metrics server |
-| `K8S_LB_CONTROLLER_HEALTH_ADDR` | `:8081` | Адрес health/readiness probes |
-| `K8S_LB_CONTROLLER_LEADER_ELECT` | `false` | Включение leader election |
-| `K8S_LB_CONTROLLER_LOAD_BALANCER_CLASS` | `iedge.local/service-lb` | Управляемый `loadBalancerClass` |
-| `K8S_LB_CONTROLLER_IP_POOL` | `203.0.113.10,203.0.113.11,203.0.113.12` | Статический пул внешних IPv4-адресов |
-| `K8S_LB_CONTROLLER_REQUEUE_AFTER` | `30s` | Задержка перед повторным reconcile при отсутствии свободного IP |
-| `K8S_LB_CONTROLLER_GRACEFUL_SHUTDOWN_TIMEOUT` | `15s` | Таймаут graceful shutdown для controller manager |
-| `K8S_LB_CONTROLLER_LOG_LEVEL` | `info` | Уровень логирования: `debug`, `info`, `warn`, `error` |
-| `K8S_LB_CONTROLLER_HAPROXY_CONFIG_PATH` | `/tmp/k8s-lb-controller-haproxy.cfg` | Путь к рендеримому HAProxy config |
-| `K8S_LB_CONTROLLER_HAPROXY_VALIDATE_COMMAND` | empty | Необязательная команда для валидации candidate config |
-| `K8S_LB_CONTROLLER_HAPROXY_RELOAD_COMMAND` | empty | Необязательная команда после успешного обновления config |
-
-Важно:
-
-- `K8S_LB_CONTROLLER_IP_POOL` должен содержать валидные уникальные IPv4-адреса.
-- `K8S_LB_CONTROLLER_REQUEUE_AFTER` используется только для управляемых сервисов, которые ждут свободный IP.
-- `K8S_LB_CONTROLLER_GRACEFUL_SHUTDOWN_TIMEOUT` должен быть положительным.
-- Если заданы команды валидации или перезагрузки HAProxy, токен `{{config}}` будет заменён на соответствующий путь к config file.
-- В Kustomize-манифестах для in-cluster запуска leader election включён явно.
-
-Для локального старта можно использовать готовый шаблон:
+### Template Local Mode
 
 ```sh
-cp .env.example .env
+helm template k8s-lb-controller ./charts/k8s-lb-controller
 ```
 
-## Локальный Запуск
-
-### Что Понадобится
-
-- Go 1.26.x
-- Docker
-- `kubectl`
-- `kind` для автоматизированного e2e-сценария
-
-### Основные Команды Для Разработки
+### Template Dataplane Mode
 
 ```sh
-make build
+helm template k8s-lb-controller ./charts/k8s-lb-controller \
+  --set controller.providerMode=dataplane-api \
+  --set dataplane.enabled=true
+```
+
+Для stage 3 chart получил новые values:
+
+- `controller.providerMode`
+- `controller.dataplane.apiURL`
+- `controller.dataplane.apiTimeout`
+- `dataplane.enabled`
+- `dataplane.image.*`
+- `dataplane.http.port`
+- `dataplane.http.addr`
+- `dataplane.haproxy.*`
+- `dataplane.logLevel`
+- `dataplane.gracefulShutdownTimeout`
+- `dataplane.resources`
+- `dataplane.nodeSelector`
+- `dataplane.tolerations`
+- `dataplane.affinity`
+
+Если `controller.dataplane.apiURL` не задан и `dataplane.enabled=true`, chart автоматически генерирует in-cluster URL dataplane service.
+
+## Runtime-Конфигурация
+
+Контроллер по-прежнему использует исходные переменные окружения для IP allocation и локального HAProxy режима.
+Stage 1 добавил:
+
+- `K8S_LB_CONTROLLER_PROVIDER_MODE`
+- `K8S_LB_CONTROLLER_DATAPLANE_API_URL`
+- `K8S_LB_CONTROLLER_DATAPLANE_API_TIMEOUT`
+
+Dataplane server использует:
+
+- `K8S_LB_DATAPLANE_HTTP_ADDR`
+- `K8S_LB_DATAPLANE_HAPROXY_CONFIG_PATH`
+- `K8S_LB_DATAPLANE_HAPROXY_VALIDATE_COMMAND`
+- `K8S_LB_DATAPLANE_HAPROXY_RELOAD_COMMAND`
+- `K8S_LB_DATAPLANE_LOG_LEVEL`
+- `K8S_LB_DATAPLANE_GRACEFUL_SHUTDOWN_TIMEOUT`
+
+## Проверка
+
+Проверка репозитория:
+
+```sh
+go test ./...
 make lint
-make test
-make test-e2e
 ```
 
-Дополнительно:
+Рендер манифестов и chart:
 
 ```sh
-make manifests
-make build-installer
+./bin/kustomize build config/default
+./bin/kustomize build config/default-dataplane
+helm template k8s-lb-controller ./charts/k8s-lb-controller
+helm template k8s-lb-controller ./charts/k8s-lb-controller --set controller.providerMode=dataplane-api --set dataplane.enabled=true
 ```
 
-### Рекомендуемый Локальный Сценарий
+## Что Отложено До Stage 4
 
-Для интерактивной разработки и demo-сценариев самый простой путь — запускать контроллер локально против текущего kubeconfig context:
+Stage 4 должен закрыть host/network часть публикации сервисов.
+Пока это осознанно отложено:
 
-```sh
-kind create cluster --name k8s-lb-controller
-cp .env.example .env
-make run
-```
-
-Что важно:
-
-- `make run` запускает контроллер на хосте.
-- При локальном запуске бинарь делает предварительную проверку kubeconfig и заранее сообщает о проблемах вроде отсутствующего kubeconfig или пустого `current-context`.
-- При конфигурации по умолчанию HAProxy config будет записываться в `/tmp/k8s-lb-controller-haproxy.cfg` на хосте.
-
-### Запуск Внутри Кластера
-
-Если нужно запустить контроллер как `Deployment` внутри кластера:
-
-```sh
-make docker-build IMG=k8s-lb-controller:dev
-kind load docker-image k8s-lb-controller:dev --name k8s-lb-controller
-make deploy IMG=k8s-lb-controller:dev
-```
-
-Этот путь близок к тому, что реально проверяется в e2e-тестах.
-
-## Манифесты И Deployment
-
-Репозиторий поддерживает два пути установки:
-
-- Helm chart для пакетной установки и распространения
-- Kustomize-манифесты для разработки, отладки и установки через манифесты
-
-Подробную Helm-документацию, значения chart и связанные примечания смотрите в [charts/k8s-lb-controller/README.ru.md](charts/k8s-lb-controller/README.ru.md).
-
-Kustomize-ресурсы в этом репозитории организованы так:
-
-- `config/default` — основной deployment entrypoint
-- `config/manager` — `Deployment` контроллера
-- `config/rbac` — service account и минимальный RBAC для `Service` и `EndpointSlice`
-- `config/default/metrics_service.yaml` — внутренний metrics `Service`
-- `config/prometheus/monitor.yaml` — optional `ServiceMonitor` для кластеров, где уже есть Prometheus Operator CRDs
-
-`ServiceMonitor` остаётся optional, потому что Prometheus Operator CRDs есть не в каждом кластере.
-
-Отрендерить набор манифестов с помощью локально установленного в репозитории Kustomize:
-
-```sh
-make kustomize
-bin/kustomize build config/default
-```
-
-Задеплоить:
-
-```sh
-make deploy IMG=ghcr.io/voronkov44/k8s-lb-controller:latest
-```
-
-Удалить:
-
-```sh
-make undeploy
-```
-
-Сгенерировать единый install bundle:
-
-```sh
-make build-installer
-```
-
-Команда создаёт `dist/install.yaml`.
-
-### Минимальный Пример Managed Service
-
-Контроллер управляет только теми сервисами, которые соответствуют настроенному классу:
-
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: demo
-spec:
-  type: LoadBalancer
-  loadBalancerClass: iedge.local/service-lb
-  selector:
-    app: demo
-  ports:
-    - port: 80
-      targetPort: 80
-```
-
-## Тестирование
-
-В текущем состоянии репозиторий включает unit-, regression- и end-to-end тесты.
-
-- `make lint` запускает `golangci-lint`
-- `make test` запускает основной Go test suite без e2e-сценариев, используя envtest assets, и пишет `cover.out`
-- `make test-e2e` поднимает кластер Kind, собирает и загружает образ контроллера, деплоит манифесты, прогоняет Ginkgo e2e-тесты и затем удаляет кластер
-
-Сейчас тестами покрыто:
-
-- селекцию объектов, lifecycle, finalizer и cleanup behavior
-- логику выделения и переиспользования IP
-- backend discovery по `EndpointSlice`
-- порядок обновления status и идемпотентность
-- рендеринг и apply semantics HAProxy provider
-- проверку manifest configuration для graceful shutdown alignment
-- end-to-end сценарии для metrics, managed vs ignored services, backend updates и deletion cleanup
-
-В репозитории также есть GitHub Actions workflows для:
-
-- lint
-- unit и regression tests
-- end-to-end tests
-
-## Лицензия
-
-Проект распространяется под Apache License, Version 2.0.
+- interface IP attachment / bind-unbind logic
+- netlink-based host integration
+- hostNetwork, hostPort и privileged networking setup
+- real external traffic publication semantics
+- live end-to-end traffic validation против развернутого dataplane

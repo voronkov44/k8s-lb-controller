@@ -1,0 +1,11 @@
+namespace: k8s-lb-controller-system
+namePrefix: k8s-lb-controller-
+
+resources:
+- ../rbac
+- ../manager
+- ../dataplane
+- metrics_service.yaml
+
+patches:
+- path: controller-dataplane-provider-patch.yaml

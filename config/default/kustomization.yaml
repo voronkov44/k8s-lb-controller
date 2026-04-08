@@ -8,3 +8,5 @@ resources:
 
 # Uncomment to install the optional ServiceMonitor when the Prometheus Operator CRDs are available.
 #- ../prometheus
+
+# Controller + dataplane mode is available via ../default-dataplane.

@@ -60,6 +60,7 @@ tolerations:
 terminationGracePeriodSeconds: 20
 
 controller:
+  providerMode: local-haproxy
   leaderElection: true
   loadBalancerClass: iedge.local/service-lb
   ipPool:
@@ -71,10 +72,42 @@ controller:
   # equal to this timeout so controller-runtime can finish graceful shutdown.
   gracefulShutdownTimeout: 15s
   logLevel: info
+  dataplane:
+    apiURL: ""
+    apiTimeout: 10s
   haproxy:
     configPath: /tmp/k8s-lb-controller-haproxy.cfg
     validateCommand: ""
     reloadCommand: ""
+
+dataplane:
+  enabled: false
+  replicaCount: 1
+  image:
+    repository: ghcr.io/voronkov44/k8s-lb-controller-dataplane
+    pullPolicy: IfNotPresent
+    tag: ""
+  http:
+    port: 8090
+    # Leave empty to derive K8S_LB_DATAPLANE_HTTP_ADDR from dataplane.http.port.
+    addr: ""
+  haproxy:
+    configPath: /var/run/k8s-lb-dataplane/haproxy.cfg
+    validateCommand: ""
+    reloadCommand: ""
+  logLevel: info
+  gracefulShutdownTimeout: 15s
+  terminationGracePeriodSeconds: 20
+  resources:
+    limits:
+      cpu: 250m
+      memory: 128Mi
+    requests:
+      cpu: 10m
+      memory: 64Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
 
 metrics:
   # The chart renders K8S_LB_CONTROLLER_METRICS_ADDR as :<port> and uses the

@@ -1,6 +1,6 @@
 apiVersion: v2
 name: k8s-lb-controller
-description: A lightweight Kubernetes LoadBalancer controller that allocates external IPs from a static pool and syncs provider state via HAProxy.
+description: A lightweight Kubernetes LoadBalancer controller with local HAProxy and optional standalone dataplane API rollout modes.
 type: application
 version: 0.1.0
 appVersion: "0.1.0"

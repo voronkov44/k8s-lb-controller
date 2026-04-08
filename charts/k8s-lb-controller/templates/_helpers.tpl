@@ -41,6 +41,15 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 {{- end -}}
 
+{{- define "k8s-lb-controller.dataplaneFullname" -}}
+{{- printf "%s-dataplane" (include "k8s-lb-controller.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "k8s-lb-controller.dataplaneSelectorLabels" -}}
+{{ include "k8s-lb-controller.selectorLabels" . }}
+app.kubernetes.io/component: dataplane
+{{- end -}}
+
 {{- define "k8s-lb-controller.ipPool" -}}
 {{- join "," .Values.controller.ipPool -}}
 {{- end -}}
@@ -51,6 +60,26 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 
 {{- define "k8s-lb-controller.healthAddr" -}}
 {{- printf ":%d" (int .Values.health.port) -}}
+{{- end -}}
+
+{{- define "k8s-lb-controller.dataplaneHTTPAddr" -}}
+{{- if .Values.dataplane.http.addr -}}
+{{- .Values.dataplane.http.addr -}}
+{{- else -}}
+{{- printf ":%d" (int .Values.dataplane.http.port) -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "k8s-lb-controller.dataplaneServiceURL" -}}
+{{- printf "http://%s.%s.svc:%d" (include "k8s-lb-controller.dataplaneFullname" .) .Release.Namespace (int .Values.dataplane.http.port) -}}
+{{- end -}}
+
+{{- define "k8s-lb-controller.controllerDataplaneAPIURL" -}}
+{{- if .Values.controller.dataplane.apiURL -}}
+{{- .Values.controller.dataplane.apiURL -}}
+{{- else if .Values.dataplane.enabled -}}
+{{- include "k8s-lb-controller.dataplaneServiceURL" . -}}
+{{- end -}}
 {{- end -}}
 
 {{- define "k8s-lb-controller.durationSeconds" -}}
@@ -86,6 +115,18 @@ app.kubernetes.io/instance: {{ .Release.Name }}
   {{- $terminationSeconds := float64 .Values.terminationGracePeriodSeconds -}}
   {{- if lt $terminationSeconds ($timeoutSeconds | float64) -}}
     {{- fail (printf "terminationGracePeriodSeconds (%d) must be greater than or equal to controller.gracefulShutdownTimeout (%s)" (int .Values.terminationGracePeriodSeconds) .Values.controller.gracefulShutdownTimeout) -}}
+  {{- end -}}
+{{- end -}}
+{{- if .Values.dataplane.enabled -}}
+  {{- $dataplaneTimeoutSeconds := include "k8s-lb-controller.durationSeconds" .Values.dataplane.gracefulShutdownTimeout | trim -}}
+  {{- if and $dataplaneTimeoutSeconds (lt (float64 .Values.dataplane.terminationGracePeriodSeconds) ($dataplaneTimeoutSeconds | float64)) -}}
+    {{- fail (printf "dataplane.terminationGracePeriodSeconds (%d) must be greater than or equal to dataplane.gracefulShutdownTimeout (%s)" (int .Values.dataplane.terminationGracePeriodSeconds) .Values.dataplane.gracefulShutdownTimeout) -}}
+  {{- end -}}
+{{- end -}}
+{{- if eq .Values.controller.providerMode "dataplane-api" -}}
+  {{- $apiURL := include "k8s-lb-controller.controllerDataplaneAPIURL" . | trim -}}
+  {{- if not $apiURL -}}
+    {{- fail "controller.providerMode=dataplane-api requires dataplane.enabled=true or controller.dataplane.apiURL to be set" -}}
   {{- end -}}
 {{- end -}}
 {{- end -}}

@@ -380,6 +380,13 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "providerMode": {
+          "type": "string",
+          "enum": [
+            "local-haproxy",
+            "dataplane-api"
+          ]
+        },
         "leaderElection": {
           "type": "boolean"
         },
@@ -411,6 +418,22 @@
             "error"
           ]
         },
+        "dataplane": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "apiURL": {
+              "type": "string"
+            },
+            "apiTimeout": {
+              "$ref": "#/definitions/durationString"
+            }
+          },
+          "required": [
+            "apiURL",
+            "apiTimeout"
+          ]
+        },
         "haproxy": {
           "type": "object",
           "additionalProperties": false,
@@ -434,13 +457,159 @@
         }
       },
       "required": [
+        "providerMode",
         "leaderElection",
         "loadBalancerClass",
         "ipPool",
         "requeueAfter",
         "gracefulShutdownTimeout",
         "logLevel",
+        "dataplane",
         "haproxy"
+      ]
+    },
+    "dataplane": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "replicaCount": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pullPolicy": {
+              "type": "string",
+              "enum": [
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
+            },
+            "tag": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "repository",
+            "pullPolicy",
+            "tag"
+          ]
+        },
+        "http": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "addr": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "port",
+            "addr"
+          ]
+        },
+        "haproxy": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "configPath": {
+              "type": "string",
+              "minLength": 1
+            },
+            "validateCommand": {
+              "type": "string"
+            },
+            "reloadCommand": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "configPath",
+            "validateCommand",
+            "reloadCommand"
+          ]
+        },
+        "logLevel": {
+          "type": "string",
+          "enum": [
+            "debug",
+            "info",
+            "warn",
+            "error"
+          ]
+        },
+        "gracefulShutdownTimeout": {
+          "$ref": "#/definitions/durationString"
+        },
+        "terminationGracePeriodSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "limits": {
+              "$ref": "#/definitions/resourceList"
+            },
+            "requests": {
+              "$ref": "#/definitions/resourceList"
+            }
+          }
+        },
+        "nodeSelector": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "tolerations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/toleration"
+          }
+        },
+        "affinity": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "nodeAffinity": {
+              "type": "object"
+            },
+            "podAffinity": {
+              "type": "object"
+            },
+            "podAntiAffinity": {
+              "type": "object"
+            }
+          }
+        }
+      },
+      "required": [
+        "enabled",
+        "replicaCount",
+        "image",
+        "http",
+        "haproxy",
+        "logLevel",
+        "gracefulShutdownTimeout",
+        "terminationGracePeriodSeconds",
+        "resources",
+        "nodeSelector",
+        "tolerations",
+        "affinity"
       ]
     },
     "metrics": {
@@ -570,6 +739,7 @@
     "tolerations",
     "terminationGracePeriodSeconds",
     "controller",
+    "dataplane",
     "metrics",
     "health",
     "extraEnv"

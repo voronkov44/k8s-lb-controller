@@ -1,5 +1,6 @@
 # Image URL used by build, push, and deploy targets.
 IMG ?= ghcr.io/voronkov44/k8s-lb-controller:latest
+DATAPLANE_IMG ?= ghcr.io/voronkov44/k8s-lb-controller-dataplane:latest
 
 # Pin the Go toolchain used by make targets to match go.mod and CI.
 GOTOOLCHAIN ?= go1.26.1
@@ -23,9 +24,18 @@ ENV_FILE_VARS := \
 	K8S_LB_CONTROLLER_REQUEUE_AFTER \
 	K8S_LB_CONTROLLER_GRACEFUL_SHUTDOWN_TIMEOUT \
 	K8S_LB_CONTROLLER_LOG_LEVEL \
+	K8S_LB_CONTROLLER_PROVIDER_MODE \
 	K8S_LB_CONTROLLER_HAPROXY_CONFIG_PATH \
 	K8S_LB_CONTROLLER_HAPROXY_VALIDATE_COMMAND \
-	K8S_LB_CONTROLLER_HAPROXY_RELOAD_COMMAND
+	K8S_LB_CONTROLLER_HAPROXY_RELOAD_COMMAND \
+	K8S_LB_CONTROLLER_DATAPLANE_API_URL \
+	K8S_LB_CONTROLLER_DATAPLANE_API_TIMEOUT \
+	K8S_LB_DATAPLANE_HTTP_ADDR \
+	K8S_LB_DATAPLANE_HAPROXY_CONFIG_PATH \
+	K8S_LB_DATAPLANE_HAPROXY_VALIDATE_COMMAND \
+	K8S_LB_DATAPLANE_HAPROXY_RELOAD_COMMAND \
+	K8S_LB_DATAPLANE_LOG_LEVEL \
+	K8S_LB_DATAPLANE_GRACEFUL_SHUTDOWN_TIMEOUT
 
 # Load variables from .env when present, but keep existing shell/CI environment values.
 ifneq (,$(wildcard $(ENV_FILE)))
@@ -137,9 +147,17 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 build: manifests generate fmt vet ## Build manager binary.
 	go build -o bin/manager cmd/main.go
 
+.PHONY: build-dataplane
+build-dataplane: manifests generate fmt vet ## Build dataplane binary.
+	go build -o bin/dataplane cmd/dataplane/main.go
+
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host with .env support when available.
 	go run ./cmd/main.go
+
+.PHONY: run-dataplane
+run-dataplane: manifests generate fmt vet ## Run the dataplane server from your host with .env support when available.
+	go run ./cmd/dataplane/main.go
 
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
@@ -148,9 +166,17 @@ run: manifests generate fmt vet ## Run a controller from your host with .env sup
 docker-build: ## Build docker image with the manager.
 	$(CONTAINER_TOOL) build -t ${IMG} .
 
+.PHONY: docker-build-dataplane
+docker-build-dataplane: ## Build docker image with the dataplane server.
+	$(CONTAINER_TOOL) build -f Dockerfile.dataplane -t ${DATAPLANE_IMG} .
+
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
 	$(CONTAINER_TOOL) push ${IMG}
+
+.PHONY: docker-push-dataplane
+docker-push-dataplane: ## Push docker image with the dataplane server.
+	$(CONTAINER_TOOL) push ${DATAPLANE_IMG}
 
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
@@ -179,6 +205,17 @@ build-installer: manifests generate kustomize ## Generate a consolidated YAML wi
 	cd "$$tmpdir/config/manager" && "$(KUSTOMIZE)" edit set image ghcr.io/voronkov44/k8s-lb-controller=${IMG}; \
 	"$(KUSTOMIZE)" build "$$tmpdir/config/default" > "$$repo_root/dist/install.yaml"
 
+.PHONY: build-installer-dataplane
+build-installer-dataplane: manifests generate kustomize ## Generate a consolidated YAML for controller + dataplane mode.
+	@repo_root="$$(pwd)"; \
+	tmpdir="$$(mktemp -d)"; \
+	trap 'rm -rf "$$tmpdir"' EXIT; \
+	cp -R config "$$tmpdir/"; \
+	mkdir -p "$$repo_root/dist"; \
+	cd "$$tmpdir/config/manager" && "$(KUSTOMIZE)" edit set image ghcr.io/voronkov44/k8s-lb-controller=${IMG}; \
+	cd "$$tmpdir/config/dataplane" && "$(KUSTOMIZE)" edit set image ghcr.io/voronkov44/k8s-lb-controller-dataplane=${DATAPLANE_IMG}; \
+	"$(KUSTOMIZE)" build "$$tmpdir/config/default-dataplane" > "$$repo_root/dist/install-dataplane.yaml"
+
 ##@ Deployment
 
 ifndef ignore-not-found
@@ -203,9 +240,22 @@ deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in
 	cd "$$tmpdir/config/manager" && "$(KUSTOMIZE)" edit set image ghcr.io/voronkov44/k8s-lb-controller=${IMG}; \
 	"$(KUSTOMIZE)" build "$$tmpdir/config/default" | "$(KUBECTL)" apply -f -
 
+.PHONY: deploy-dataplane
+deploy-dataplane: manifests kustomize ## Deploy controller + dataplane mode to the K8s cluster specified in ~/.kube/config.
+	@tmpdir="$$(mktemp -d)"; \
+	trap 'rm -rf "$$tmpdir"' EXIT; \
+	cp -R config "$$tmpdir/"; \
+	cd "$$tmpdir/config/manager" && "$(KUSTOMIZE)" edit set image ghcr.io/voronkov44/k8s-lb-controller=${IMG}; \
+	cd "$$tmpdir/config/dataplane" && "$(KUSTOMIZE)" edit set image ghcr.io/voronkov44/k8s-lb-controller-dataplane=${DATAPLANE_IMG}; \
+	"$(KUSTOMIZE)" build "$$tmpdir/config/default-dataplane" | "$(KUBECTL)" apply -f -
+
 .PHONY: undeploy
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	"$(KUSTOMIZE)" build config/default | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -
+
+.PHONY: undeploy-dataplane
+undeploy-dataplane: kustomize ## Undeploy controller + dataplane mode from the K8s cluster specified in ~/.kube/config.
+	"$(KUSTOMIZE)" build config/default-dataplane | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -
 
 ##@ Dependencies
 

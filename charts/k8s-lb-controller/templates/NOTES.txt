@@ -1,7 +1,22 @@
 1. Confirm the controller is running:
    kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }},app.kubernetes.io/name={{ include "k8s-lb-controller.name" . }}
 
-2. Example managed Service:
+{{- if .Values.dataplane.enabled }}
+
+2. Confirm the dataplane pod and service are running:
+   kubectl get deploy,svc -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }},app.kubernetes.io/component=dataplane
+
+   Controller dataplane URL:
+   {{ include "k8s-lb-controller.controllerDataplaneAPIURL" . }}
+
+{{- else }}
+
+2. Controller provider mode:
+   {{ .Values.controller.providerMode }}
+
+{{- end }}
+
+3. Example managed Service:
 
    apiVersion: v1
    kind: Service
@@ -16,5 +31,5 @@
        - port: 80
          targetPort: 80
 
-3. Watch the assigned external address:
+4. Watch the assigned external address:
    kubectl get svc demo -o wide
