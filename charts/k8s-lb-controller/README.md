@@ -24,7 +24,12 @@ The chart is published as an OCI chart:
 ```bash
 helm install k8s-lb-controller oci://ghcr.io/voronkov44/charts/k8s-lb-controller \
   --version 0.1.0 \
+<<<<<<< HEAD
   -n k8s-lb-controller-system --create-namespace
+=======
+  -n k8s-lb-controller-system \
+  --create-namespace
+>>>>>>> main
 ```
 
 For a checkout of this repository, replace the OCI reference with `./charts/k8s-lb-controller`.
@@ -51,7 +56,12 @@ terminationGracePeriodSeconds: 30
 ```bash
 helm install k8s-lb-controller oci://ghcr.io/voronkov44/charts/k8s-lb-controller \
   --version 0.1.0 \
+<<<<<<< HEAD
   -n k8s-lb-controller-system --create-namespace \
+=======
+  -n k8s-lb-controller-system \
+  --create-namespace \
+>>>>>>> main
   -f values-local.yaml
 ```
 

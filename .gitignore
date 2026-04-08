@@ -37,3 +37,4 @@ go.work
 
 # Kubeconfig might contain secrets
 *.kubeconfig
+*.tgz
