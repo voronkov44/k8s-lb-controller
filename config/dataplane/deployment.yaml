@@ -51,6 +51,8 @@ spec:
           value: "15s"
         - name: K8S_LB_DATAPLANE_IP_ATTACH_ENABLED
           value: "true"
+        - name: K8S_LB_DATAPLANE_IP_ATTACH_MODE
+          value: "netlink"
         - name: K8S_LB_DATAPLANE_INTERFACE
           value: "eth0"
         - name: K8S_LB_DATAPLANE_IP_COMMAND

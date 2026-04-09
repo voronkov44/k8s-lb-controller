@@ -75,7 +75,7 @@ For a checkout of this repository, replace the OCI reference with `./charts/k8s-
 | `dataplane.enabled` | Enables the dataplane Deployment and Service. |
 | `dataplane.hostNetwork`, `dataplane.shareProcessNamespace` | Pod-level runtime wiring for the real dataplane listener. |
 | `dataplane.image.repository`, `dataplane.image.tag`, `dataplane.image.pullPolicy` | Dataplane image settings. |
-| `dataplane.interface`, `dataplane.ipAttach.*` | Host interface selection and command-based external IP attachment settings for controlled environments. |
+| `dataplane.interface`, `dataplane.ipAttach.*` | Host interface selection plus netlink or exec-based external IP attachment settings for controlled environments. |
 | `dataplane.http.port` | ClusterIP Service port and container port for the dataplane API. |
 | `dataplane.http.addr` | Optional explicit `K8S_LB_DATAPLANE_HTTP_ADDR`; when empty the chart derives it from `dataplane.http.port`. |
 | `dataplane.haproxy.image.*` | Sidecar image settings for the HAProxy runtime container. |
@@ -126,6 +126,7 @@ dataplane:
   interface: eth0
   ipAttach:
     enabled: true
+    mode: netlink
   http:
     port: 8090
   haproxy:
@@ -137,9 +138,10 @@ dataplane:
 
 - Local mode remains available and is still the chart default.
 - Dataplane mode now runs the dataplane API server plus an HAProxy sidecar in one pod.
-- The stage-4 dataplane runtime is intended for controlled single-node and lab environments.
-- Dataplane mode enables host networking and command-based interface IP attachment, so it needs elevated networking permissions in the dataplane pod.
-- Netlink and broader production networking semantics are still deferred.
+- The stage-5 dataplane runtime is intended for controlled single-node and lab environments.
+- Dataplane mode enables host networking and elevated networking permissions in the dataplane pod for host-side IP attachment.
+- `dataplane.ipAttach.mode` defaults to `netlink`, and `exec` remains available as a fallback.
+- Broader production networking semantics are still deferred.
 - `ServiceMonitor` support remains optional and is rendered only when the existing metrics settings enable it.
 
 ## Verification

@@ -41,8 +41,10 @@ const (
 	EnvLogLevel = "K8S_LB_DATAPLANE_LOG_LEVEL"
 	// EnvGracefulShutdownTimeout configures how long the server waits for in-flight requests to finish on shutdown.
 	EnvGracefulShutdownTimeout = "K8S_LB_DATAPLANE_GRACEFUL_SHUTDOWN_TIMEOUT"
-	// EnvIPAttachEnabled enables command-based host-side external IP attachment.
+	// EnvIPAttachEnabled enables host-side external IP attachment.
 	EnvIPAttachEnabled = "K8S_LB_DATAPLANE_IP_ATTACH_ENABLED"
+	// EnvIPAttachMode selects which host-side IP attachment backend to use.
+	EnvIPAttachMode = "K8S_LB_DATAPLANE_IP_ATTACH_MODE"
 	// EnvInterface configures which host interface receives external IPs.
 	EnvInterface = "K8S_LB_DATAPLANE_INTERFACE"
 	// EnvIPCommand configures the command path used for external IP management.
@@ -68,6 +70,8 @@ const (
 	DefaultGracefulShutdownTimeout = 15 * time.Second
 	// DefaultIPAttachEnabled keeps host integration opt-in outside deployed dataplane mode.
 	DefaultIPAttachEnabled = false
+	// DefaultIPAttachMode prefers netlink while keeping exec available as an explicit fallback.
+	DefaultIPAttachMode = ipattach.DefaultMode
 	// DefaultInterface requires deployments to choose the host interface explicitly when IP attachment is enabled.
 	DefaultInterface = ""
 	// DefaultIPCommand is the default executable used to manage interface addresses.
@@ -104,6 +108,7 @@ type Config struct {
 	LogLevel                string
 	GracefulShutdownTimeout time.Duration
 	IPAttachEnabled         bool
+	IPAttachMode            ipattach.Mode
 	Interface               string
 	IPCommand               string
 	IPCIDRSuffix            int
@@ -118,6 +123,7 @@ func LoadConfig() (Config, error) {
 		HAProxyReloadCommand:   stringEnv(EnvHAProxyReloadCommand, DefaultHAProxyReloadCommand),
 		HAProxyPIDFile:         stringEnv(EnvHAProxyPIDFile, DefaultHAProxyPIDFile),
 		LogLevel:               normalizeLogLevel(stringEnv(EnvLogLevel, DefaultLogLevel)),
+		IPAttachMode:           ipattach.Mode(stringEnv(EnvIPAttachMode, string(DefaultIPAttachMode))).Normalize(),
 		Interface:              stringEnv(EnvInterface, DefaultInterface),
 		IPCommand:              stringEnv(EnvIPCommand, DefaultIPCommand),
 	}
@@ -155,6 +161,10 @@ func LoadConfig() (Config, error) {
 		return Config{}, fmt.Errorf("%s must be one of: debug, info, warn, error", EnvLogLevel)
 	}
 
+	if !cfg.IPAttachMode.Valid() {
+		return Config{}, fmt.Errorf("%s must be one of: %s, %s", EnvIPAttachMode, ipattach.ModeNetlink, ipattach.ModeExec)
+	}
+
 	if cfg.IPCIDRSuffix < 1 || cfg.IPCIDRSuffix > 32 {
 		return Config{}, fmt.Errorf("%s must be between 1 and 32", EnvIPCIDRSuffix)
 	}
@@ -163,7 +173,7 @@ func LoadConfig() (Config, error) {
 		if cfg.Interface == "" {
 			return Config{}, fmt.Errorf("%s must not be empty when %s=true", EnvInterface, EnvIPAttachEnabled)
 		}
-		if cfg.IPCommand == "" {
+		if cfg.IPAttachMode == ipattach.ModeExec && cfg.IPCommand == "" {
 			return Config{}, fmt.Errorf("%s must not be empty when %s=true", EnvIPCommand, EnvIPAttachEnabled)
 		}
 	}

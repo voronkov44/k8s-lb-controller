@@ -54,6 +54,8 @@ spec:
               value: {{ .Values.dataplane.gracefulShutdownTimeout | quote }}
             - name: K8S_LB_DATAPLANE_IP_ATTACH_ENABLED
               value: {{ ternary "true" "false" .Values.dataplane.ipAttach.enabled | quote }}
+            - name: K8S_LB_DATAPLANE_IP_ATTACH_MODE
+              value: {{ .Values.dataplane.ipAttach.mode | quote }}
             - name: K8S_LB_DATAPLANE_INTERFACE
               value: {{ .Values.dataplane.interface | quote }}
             - name: K8S_LB_DATAPLANE_IP_COMMAND

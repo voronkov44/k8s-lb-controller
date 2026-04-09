@@ -134,6 +134,12 @@ app.kubernetes.io/component: dataplane
     {{- if not (.Values.dataplane.interface | trim) -}}
       {{- fail "dataplane.interface must be set when dataplane.ipAttach.enabled=true" -}}
     {{- end -}}
+    {{- if not (has .Values.dataplane.ipAttach.mode (list "netlink" "exec")) -}}
+      {{- fail "dataplane.ipAttach.mode must be one of: netlink, exec" -}}
+    {{- end -}}
+    {{- if and (eq .Values.dataplane.ipAttach.mode "exec") (not (.Values.dataplane.ipAttach.command | trim)) -}}
+      {{- fail "dataplane.ipAttach.command must be set when dataplane.ipAttach.mode=exec" -}}
+    {{- end -}}
   {{- end -}}
   {{- if ne (dir .Values.dataplane.haproxy.configPath) (dir .Values.dataplane.haproxy.pidFile) -}}
     {{- fail "dataplane.haproxy.configPath and dataplane.haproxy.pidFile must use the same runtime directory" -}}

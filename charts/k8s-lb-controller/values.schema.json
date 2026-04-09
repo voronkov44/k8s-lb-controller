@@ -626,9 +626,15 @@
             "enabled": {
               "type": "boolean"
             },
-            "command": {
+            "mode": {
               "type": "string",
-              "minLength": 1
+              "enum": [
+                "netlink",
+                "exec"
+              ]
+            },
+            "command": {
+              "type": "string"
             },
             "cidrSuffix": {
               "type": "integer",
@@ -638,7 +644,7 @@
           },
           "required": [
             "enabled",
-            "command",
+            "mode",
             "cidrSuffix"
           ]
         },

@@ -19,6 +19,8 @@ package dataplane
 import (
 	"testing"
 	"time"
+
+	"github.com/voronkov44/k8s-lb-controller/internal/dataplane/ipattach"
 )
 
 func TestLoadConfigDefaults(t *testing.T) {
@@ -61,6 +63,10 @@ func TestLoadConfigDefaults(t *testing.T) {
 		t.Fatalf("IPAttachEnabled = %t, want %t", cfg.IPAttachEnabled, DefaultIPAttachEnabled)
 	}
 
+	if cfg.IPAttachMode != DefaultIPAttachMode {
+		t.Fatalf("IPAttachMode = %q, want %q", cfg.IPAttachMode, DefaultIPAttachMode)
+	}
+
 	if cfg.Interface != DefaultInterface {
 		t.Fatalf("Interface = %q, want %q", cfg.Interface, DefaultInterface)
 	}
@@ -84,6 +90,7 @@ func TestLoadConfigOverrides(t *testing.T) {
 	t.Setenv(EnvLogLevel, "DEBUG")
 	t.Setenv(EnvGracefulShutdownTimeout, "20s")
 	t.Setenv(EnvIPAttachEnabled, "true")
+	t.Setenv(EnvIPAttachMode, "exec")
 	t.Setenv(EnvInterface, "eth0")
 	t.Setenv(EnvIPCommand, "/sbin/ip")
 	t.Setenv(EnvIPCIDRSuffix, "32")
@@ -125,6 +132,10 @@ func TestLoadConfigOverrides(t *testing.T) {
 		t.Fatal("IPAttachEnabled = false, want true")
 	}
 
+	if cfg.IPAttachMode != ipattach.ModeExec {
+		t.Fatalf("IPAttachMode = %q, want %q", cfg.IPAttachMode, ipattach.ModeExec)
+	}
+
 	if cfg.Interface != "eth0" {
 		t.Fatalf("Interface = %q, want %q", cfg.Interface, "eth0")
 	}
@@ -156,6 +167,23 @@ func TestLoadConfigRejectsInvalidGracefulShutdownTimeout(t *testing.T) {
 	}
 }
 
+func TestLoadConfigAcceptsNetlinkModeWithoutCommand(t *testing.T) {
+	setDataplaneEnvToEmpty(t)
+	t.Setenv(EnvIPAttachEnabled, "true")
+	t.Setenv(EnvIPAttachMode, "netlink")
+	t.Setenv(EnvInterface, "eth0")
+	t.Setenv(EnvIPCommand, "")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+
+	if cfg.IPAttachMode != ipattach.ModeNetlink {
+		t.Fatalf("IPAttachMode = %q, want %q", cfg.IPAttachMode, ipattach.ModeNetlink)
+	}
+}
+
 func TestLoadConfigRejectsIPAttachWithoutInterface(t *testing.T) {
 	setDataplaneEnvToEmpty(t)
 	t.Setenv(EnvIPAttachEnabled, "true")
@@ -184,6 +212,15 @@ func TestLoadConfigRejectsInvalidIPAttachBool(t *testing.T) {
 	}
 }
 
+func TestLoadConfigRejectsInvalidIPAttachMode(t *testing.T) {
+	setDataplaneEnvToEmpty(t)
+	t.Setenv(EnvIPAttachMode, "mystery")
+
+	if _, err := LoadConfig(); err == nil {
+		t.Fatal("LoadConfig() error = nil, want non-nil")
+	}
+}
+
 func setDataplaneEnvToEmpty(t *testing.T) {
 	t.Helper()
 
@@ -195,6 +232,7 @@ func setDataplaneEnvToEmpty(t *testing.T) {
 	t.Setenv(EnvLogLevel, "")
 	t.Setenv(EnvGracefulShutdownTimeout, "")
 	t.Setenv(EnvIPAttachEnabled, "")
+	t.Setenv(EnvIPAttachMode, "")
 	t.Setenv(EnvInterface, "")
 	t.Setenv(EnvIPCommand, "")
 	t.Setenv(EnvIPCIDRSuffix, "")

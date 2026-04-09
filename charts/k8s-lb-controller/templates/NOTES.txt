@@ -12,6 +12,9 @@
    Dataplane host interface:
    {{ .Values.dataplane.interface }}
 
+   Dataplane IP attach mode:
+   {{ .Values.dataplane.ipAttach.mode }}
+
 {{- else }}
 
 2. Controller provider mode:

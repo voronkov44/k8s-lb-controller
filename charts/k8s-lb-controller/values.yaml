@@ -108,6 +108,8 @@ dataplane:
   interface: eth0
   ipAttach:
     enabled: true
+    # netlink is the stage-5 default; exec keeps the stage-4 command-based fallback.
+    mode: netlink
     command: /sbin/ip
     cidrSuffix: 32
   haproxy:

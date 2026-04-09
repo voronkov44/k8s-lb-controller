@@ -75,7 +75,7 @@ helm install k8s-lb-controller oci://ghcr.io/voronkov44/charts/k8s-lb-controller
 | `dataplane.enabled` | Включает dataplane Deployment и Service. |
 | `dataplane.hostNetwork`, `dataplane.shareProcessNamespace` | Pod-level wiring для реального dataplane listener. |
 | `dataplane.image.repository`, `dataplane.image.tag`, `dataplane.image.pullPolicy` | Настройки образа dataplane. |
-| `dataplane.interface`, `dataplane.ipAttach.*` | Выбор host interface и command-based attach/detach внешних IP для controlled environment. |
+| `dataplane.interface`, `dataplane.ipAttach.*` | Выбор host interface и настроек netlink или exec-based attach/detach внешних IP для controlled environment. |
 | `dataplane.http.port` | ClusterIP Service port и container port для dataplane API. |
 | `dataplane.http.addr` | Необязательный явный `K8S_LB_DATAPLANE_HTTP_ADDR`; если пусто, chart выводит его из `dataplane.http.port`. |
 | `dataplane.haproxy.image.*` | Настройки образа sidecar-контейнера с HAProxy runtime. |
@@ -126,6 +126,7 @@ dataplane:
   interface: eth0
   ipAttach:
     enabled: true
+    mode: netlink
   http:
     port: 8090
   haproxy:
@@ -137,9 +138,10 @@ dataplane:
 
 - Local mode никуда не делся и остаётся режимом по умолчанию для chart.
 - Dataplane mode теперь запускает dataplane API server и HAProxy sidecar в одном pod.
-- Stage 4 ориентирован на controlled single-node и lab environment.
-- Dataplane mode включает host networking и command-based interface IP attachment, поэтому dataplane pod требует повышенных networking permissions.
-- Netlink и более широкие production networking semantics пока остаются отложенными.
+- Stage 5 ориентирован на controlled single-node и lab environment.
+- Dataplane mode включает host networking и повышенные networking permissions для host-side IP attachment.
+- `dataplane.ipAttach.mode` по умолчанию равен `netlink`, а `exec` остаётся fallback-вариантом.
+- Более широкие production networking semantics пока остаются отложенными.
 - Поддержка `ServiceMonitor` остаётся опциональной и рендерится только при включённых существующих metrics settings.
 
 ## Проверка

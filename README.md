@@ -17,9 +17,9 @@ It keeps full in-memory desired state, renders one deterministic HAProxy config 
 
 Important current limitation:
 
-- Stage 4 wires the dataplane into a real HAProxy runtime for controlled single-node and lab environments.
-- It now uses command-based host integration for external IP attach/detach.
-- It still does not implement netlink, multi-node/HA dataplane placement, or broader production networking semantics.
+- Stage 5 keeps the real HAProxy dataplane runtime for controlled single-node and lab environments.
+- It now supports netlink-based host-side IP attachment by default, with the stage-4 exec path kept as a fallback.
+- It still does not implement multi-node/HA dataplane placement or broader production networking semantics.
 
 ## Deployment Modes
 
@@ -47,7 +47,8 @@ In this mode:
 - the controller uses `K8S_LB_CONTROLLER_PROVIDER_MODE=dataplane-api`
 - the controller sends `PUT /services/{namespace}/{name}` and `DELETE /services/{namespace}/{name}` requests to the dataplane service
 - the dataplane process stores all desired services in memory and renders/applies one aggregate HAProxy config
-- the dataplane pod uses host networking plus command-based `ip addr add` / `ip addr del` integration to attach external IPv4 addresses to one configured host interface
+- the dataplane pod uses host networking plus host-side IP attachment on one configured interface
+- stage 5 defaults to a netlink-based attachment backend and still supports the stage-4 exec backend as a fallback
 
 This mode is intentionally aimed at demos, local labs, and single-node controlled environments.
 
@@ -129,7 +130,7 @@ In the dataplane Kustomize entrypoint, the controller is wired to the in-cluster
 
 `http://k8s-lb-controller-dataplane.k8s-lb-controller-system.svc:8090`
 
-The stage-4 dataplane manifests also enable host networking, `shareProcessNamespace`, a real HAProxy sidecar, and command-based IP attachment on interface `eth0`.
+The dataplane manifests also enable host networking, `shareProcessNamespace`, a real HAProxy sidecar, and netlink-based IP attachment on interface `eth0` by default. Exec mode remains available through the dataplane IP attach mode setting.
 
 ## Helm
 
@@ -177,7 +178,7 @@ Helm values for dataplane mode include:
 - `dataplane.affinity`
 
 If `controller.dataplane.apiURL` is not set and `dataplane.enabled=true`, the chart generates the in-cluster dataplane service URL automatically.
-The stage-4 chart defaults also enable the real dataplane runtime path with host networking, a shared-pid HAProxy sidecar, and command-based IP attachment on `dataplane.interface`.
+The chart defaults also enable the real dataplane runtime path with host networking, a shared-pid HAProxy sidecar, and `dataplane.ipAttach.mode=netlink`. Exec mode remains available as a fallback.
 
 ## Runtime Configuration
 
@@ -198,6 +199,7 @@ The dataplane server uses:
 - `K8S_LB_DATAPLANE_LOG_LEVEL`
 - `K8S_LB_DATAPLANE_GRACEFUL_SHUTDOWN_TIMEOUT`
 - `K8S_LB_DATAPLANE_IP_ATTACH_ENABLED`
+- `K8S_LB_DATAPLANE_IP_ATTACH_MODE`
 - `K8S_LB_DATAPLANE_INTERFACE`
 - `K8S_LB_DATAPLANE_IP_COMMAND`
 - `K8S_LB_DATAPLANE_IP_CIDR_SUFFIX`
@@ -220,11 +222,10 @@ helm template k8s-lb-controller ./charts/k8s-lb-controller
 helm template k8s-lb-controller ./charts/k8s-lb-controller --set controller.providerMode=dataplane-api --set dataplane.enabled=true
 ```
 
-## What Is Deferred To Stage 5
+## What Is Deferred To Stage 6
 
-Stage 4 makes dataplane mode practical for controlled environments, but several production-oriented items are still intentionally deferred:
+Stage 5 improves the host-side IP management quality, but several production-oriented items are still intentionally deferred:
 
-- netlink-based IP management
 - multi-node or HA dataplane placement and coordination
 - BGP, ARP/NDP, cloud-provider, or other advanced network publication semantics
 - broader production hardening around host integration

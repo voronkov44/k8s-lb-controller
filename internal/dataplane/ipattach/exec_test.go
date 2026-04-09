@@ -26,9 +26,9 @@ import (
 	"testing"
 )
 
-func TestManagerEnsurePresentAddsAddress(t *testing.T) {
+func TestExecManagerEnsurePresentAddsAddress(t *testing.T) {
 	runner := newFakeRunner()
-	manager := newTestManager(t, runner)
+	manager := newTestExecManager(t, runner)
 
 	changed, err := manager.EnsurePresent(context.Background(), netip.MustParseAddr("203.0.113.10"))
 	if err != nil {
@@ -43,9 +43,9 @@ func TestManagerEnsurePresentAddsAddress(t *testing.T) {
 	}
 }
 
-func TestManagerEnsureAbsentDeletesAddress(t *testing.T) {
+func TestExecManagerEnsureAbsentDeletesAddress(t *testing.T) {
 	runner := newFakeRunner("203.0.113.10")
-	manager := newTestManager(t, runner)
+	manager := newTestExecManager(t, runner)
 
 	changed, err := manager.EnsureAbsent(context.Background(), netip.MustParseAddr("203.0.113.10"))
 	if err != nil {
@@ -60,9 +60,9 @@ func TestManagerEnsureAbsentDeletesAddress(t *testing.T) {
 	}
 }
 
-func TestManagerEnsurePresentIsIdempotent(t *testing.T) {
+func TestExecManagerEnsurePresentIsIdempotent(t *testing.T) {
 	runner := newFakeRunner("203.0.113.10")
-	manager := newTestManager(t, runner)
+	manager := newTestExecManager(t, runner)
 
 	changed, err := manager.EnsurePresent(context.Background(), netip.MustParseAddr("203.0.113.10"))
 	if err != nil {
@@ -77,9 +77,9 @@ func TestManagerEnsurePresentIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestManagerEnsureAbsentIsIdempotent(t *testing.T) {
+func TestExecManagerEnsureAbsentIsIdempotent(t *testing.T) {
 	runner := newFakeRunner()
-	manager := newTestManager(t, runner)
+	manager := newTestExecManager(t, runner)
 
 	changed, err := manager.EnsureAbsent(context.Background(), netip.MustParseAddr("203.0.113.10"))
 	if err != nil {
@@ -94,10 +94,10 @@ func TestManagerEnsureAbsentIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestManagerReturnsCommandFailure(t *testing.T) {
+func TestExecManagerReturnsCommandFailure(t *testing.T) {
 	runner := newFakeRunner()
 	runner.failAdd = errors.New("boom")
-	manager := newTestManager(t, runner)
+	manager := newTestExecManager(t, runner)
 
 	_, err := manager.EnsurePresent(context.Background(), netip.MustParseAddr("203.0.113.10"))
 	if err == nil {
@@ -106,6 +106,23 @@ func TestManagerReturnsCommandFailure(t *testing.T) {
 	if !strings.Contains(err.Error(), "attach external IP") {
 		t.Fatalf("EnsurePresent() error = %v, want attach external IP context", err)
 	}
+}
+
+func newTestExecManager(t *testing.T, runner Runner) Manager {
+	t.Helper()
+
+	manager, err := NewManager(Config{
+		Enabled:     true,
+		Mode:        ModeExec,
+		Interface:   "eth0",
+		CommandPath: "ip",
+		CIDRSuffix:  32,
+	}, Dependencies{Runner: runner})
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+
+	return manager
 }
 
 type fakeRunner struct {
@@ -189,22 +206,6 @@ func (r *fakeRunner) renderList() string {
 	}
 
 	return strings.Join(lines, "\n")
-}
-
-func newTestManager(t *testing.T, runner Runner) *Manager {
-	t.Helper()
-
-	manager, err := NewManager(Config{
-		Enabled:     true,
-		Interface:   "eth0",
-		CommandPath: "ip",
-		CIDRSuffix:  32,
-	}, runner)
-	if err != nil {
-		t.Fatalf("NewManager() error = %v", err)
-	}
-
-	return manager
 }
 
 func prefixAddr(value string) (string, error) {

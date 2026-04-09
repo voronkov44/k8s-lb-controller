@@ -56,10 +56,11 @@ func main() {
 
 	ipManager, err := ipattach.NewManager(ipattach.Config{
 		Enabled:     cfg.IPAttachEnabled,
+		Mode:        cfg.IPAttachMode,
 		Interface:   cfg.Interface,
 		CommandPath: cfg.IPCommand,
 		CIDRSuffix:  cfg.IPCIDRSuffix,
-	}, nil)
+	}, ipattach.Dependencies{})
 	if err != nil {
 		logger.Error("unable to create IP attachment manager", "error", err.Error())
 		os.Exit(1)
@@ -86,6 +87,7 @@ func main() {
 		"haproxyValidateEnabled", cfg.HAProxyValidateCommand != "",
 		"haproxyReloadEnabled", cfg.HAProxyReloadCommand != "",
 		"ipAttachEnabled", cfg.IPAttachEnabled,
+		"ipAttachMode", cfg.IPAttachMode,
 		"interface", cfg.Interface,
 		"ipCommand", cfg.IPCommand,
 		"ipCIDRSuffix", cfg.IPCIDRSuffix,
