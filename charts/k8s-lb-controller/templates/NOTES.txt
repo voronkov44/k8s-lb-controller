@@ -9,6 +9,9 @@
    Controller dataplane URL:
    {{ include "k8s-lb-controller.controllerDataplaneAPIURL" . }}
 
+   Dataplane host interface:
+   {{ .Values.dataplane.interface }}
+
 {{- else }}
 
 2. Controller provider mode:

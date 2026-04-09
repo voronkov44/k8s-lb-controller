@@ -20,10 +20,11 @@ COPY . .
 # M1 SO the docker BUILDPLATFORM arg will be linux/arm64 when for Apple x86 it will be linux/amd64.
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o dataplane cmd/dataplane/main.go
 
-# Use distroless as minimal base image to package the dataplane binary
-FROM gcr.io/distroless/static:nonroot
+# Stage 4 needs a practical runtime image with a shell, iproute2, and haproxy available
+# so the dataplane API container can validate configs, reload the sidecar, and attach IPs.
+FROM alpine:3.22
+RUN apk add --no-cache ca-certificates haproxy iproute2
 WORKDIR /
-COPY --from=builder /workspace/dataplane .
-USER 65532:65532
+COPY --from=builder /workspace/dataplane /dataplane
 
 ENTRYPOINT ["/dataplane"]

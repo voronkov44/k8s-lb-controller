@@ -45,12 +45,32 @@ func TestLoadConfigDefaults(t *testing.T) {
 		t.Fatalf("HAProxyReloadCommand = %q, want %q", cfg.HAProxyReloadCommand, DefaultHAProxyReloadCommand)
 	}
 
+	if cfg.HAProxyPIDFile != DefaultHAProxyPIDFile {
+		t.Fatalf("HAProxyPIDFile = %q, want %q", cfg.HAProxyPIDFile, DefaultHAProxyPIDFile)
+	}
+
 	if cfg.LogLevel != DefaultLogLevel {
 		t.Fatalf("LogLevel = %q, want %q", cfg.LogLevel, DefaultLogLevel)
 	}
 
 	if cfg.GracefulShutdownTimeout != DefaultGracefulShutdownTimeout {
 		t.Fatalf("GracefulShutdownTimeout = %s, want %s", cfg.GracefulShutdownTimeout, DefaultGracefulShutdownTimeout)
+	}
+
+	if cfg.IPAttachEnabled != DefaultIPAttachEnabled {
+		t.Fatalf("IPAttachEnabled = %t, want %t", cfg.IPAttachEnabled, DefaultIPAttachEnabled)
+	}
+
+	if cfg.Interface != DefaultInterface {
+		t.Fatalf("Interface = %q, want %q", cfg.Interface, DefaultInterface)
+	}
+
+	if cfg.IPCommand != DefaultIPCommand {
+		t.Fatalf("IPCommand = %q, want %q", cfg.IPCommand, DefaultIPCommand)
+	}
+
+	if cfg.IPCIDRSuffix != DefaultIPCIDRSuffix {
+		t.Fatalf("IPCIDRSuffix = %d, want %d", cfg.IPCIDRSuffix, DefaultIPCIDRSuffix)
 	}
 }
 
@@ -60,8 +80,13 @@ func TestLoadConfigOverrides(t *testing.T) {
 	t.Setenv(EnvHAProxyConfigPath, "/tmp/dataplane.cfg")
 	t.Setenv(EnvHAProxyValidateCommand, "haproxy -c -f {{config}}")
 	t.Setenv(EnvHAProxyReloadCommand, "service haproxy reload")
+	t.Setenv(EnvHAProxyPIDFile, "/run/haproxy.pid")
 	t.Setenv(EnvLogLevel, "DEBUG")
 	t.Setenv(EnvGracefulShutdownTimeout, "20s")
+	t.Setenv(EnvIPAttachEnabled, "true")
+	t.Setenv(EnvInterface, "eth0")
+	t.Setenv(EnvIPCommand, "/sbin/ip")
+	t.Setenv(EnvIPCIDRSuffix, "32")
 
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -84,12 +109,32 @@ func TestLoadConfigOverrides(t *testing.T) {
 		t.Fatalf("HAProxyReloadCommand = %q, want %q", cfg.HAProxyReloadCommand, "service haproxy reload")
 	}
 
+	if cfg.HAProxyPIDFile != "/run/haproxy.pid" {
+		t.Fatalf("HAProxyPIDFile = %q, want %q", cfg.HAProxyPIDFile, "/run/haproxy.pid")
+	}
+
 	if cfg.LogLevel != LogLevelDebug {
 		t.Fatalf("LogLevel = %q, want %q", cfg.LogLevel, LogLevelDebug)
 	}
 
 	if cfg.GracefulShutdownTimeout != 20*time.Second {
 		t.Fatalf("GracefulShutdownTimeout = %s, want %s", cfg.GracefulShutdownTimeout, 20*time.Second)
+	}
+
+	if !cfg.IPAttachEnabled {
+		t.Fatal("IPAttachEnabled = false, want true")
+	}
+
+	if cfg.Interface != "eth0" {
+		t.Fatalf("Interface = %q, want %q", cfg.Interface, "eth0")
+	}
+
+	if cfg.IPCommand != "/sbin/ip" {
+		t.Fatalf("IPCommand = %q, want %q", cfg.IPCommand, "/sbin/ip")
+	}
+
+	if cfg.IPCIDRSuffix != 32 {
+		t.Fatalf("IPCIDRSuffix = %d, want %d", cfg.IPCIDRSuffix, 32)
 	}
 }
 
@@ -111,6 +156,34 @@ func TestLoadConfigRejectsInvalidGracefulShutdownTimeout(t *testing.T) {
 	}
 }
 
+func TestLoadConfigRejectsIPAttachWithoutInterface(t *testing.T) {
+	setDataplaneEnvToEmpty(t)
+	t.Setenv(EnvIPAttachEnabled, "true")
+	t.Setenv(EnvInterface, " ")
+
+	if _, err := LoadConfig(); err == nil {
+		t.Fatal("LoadConfig() error = nil, want non-nil")
+	}
+}
+
+func TestLoadConfigRejectsInvalidIPCIDRSuffix(t *testing.T) {
+	setDataplaneEnvToEmpty(t)
+	t.Setenv(EnvIPCIDRSuffix, "33")
+
+	if _, err := LoadConfig(); err == nil {
+		t.Fatal("LoadConfig() error = nil, want non-nil")
+	}
+}
+
+func TestLoadConfigRejectsInvalidIPAttachBool(t *testing.T) {
+	setDataplaneEnvToEmpty(t)
+	t.Setenv(EnvIPAttachEnabled, "definitely")
+
+	if _, err := LoadConfig(); err == nil {
+		t.Fatal("LoadConfig() error = nil, want non-nil")
+	}
+}
+
 func setDataplaneEnvToEmpty(t *testing.T) {
 	t.Helper()
 
@@ -118,6 +191,11 @@ func setDataplaneEnvToEmpty(t *testing.T) {
 	t.Setenv(EnvHAProxyConfigPath, "")
 	t.Setenv(EnvHAProxyValidateCommand, "")
 	t.Setenv(EnvHAProxyReloadCommand, "")
+	t.Setenv(EnvHAProxyPIDFile, "")
 	t.Setenv(EnvLogLevel, "")
 	t.Setenv(EnvGracefulShutdownTimeout, "")
+	t.Setenv(EnvIPAttachEnabled, "")
+	t.Setenv(EnvInterface, "")
+	t.Setenv(EnvIPCommand, "")
+	t.Setenv(EnvIPCIDRSuffix, "")
 }

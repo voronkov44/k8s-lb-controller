@@ -29,6 +29,7 @@ import (
 
 	controllerconfig "github.com/voronkov44/k8s-lb-controller/internal/config"
 	"github.com/voronkov44/k8s-lb-controller/internal/dataplane"
+	"github.com/voronkov44/k8s-lb-controller/internal/dataplane/ipattach"
 )
 
 func main() {
@@ -53,10 +54,23 @@ func main() {
 	logger.Info("dataplane startup beginning")
 	logDotEnvStatus(logger, dotEnvLoaded)
 
+	ipManager, err := ipattach.NewManager(ipattach.Config{
+		Enabled:     cfg.IPAttachEnabled,
+		Interface:   cfg.Interface,
+		CommandPath: cfg.IPCommand,
+		CIDRSuffix:  cfg.IPCIDRSuffix,
+	}, nil)
+	if err != nil {
+		logger.Error("unable to create IP attachment manager", "error", err.Error())
+		os.Exit(1)
+	}
+
 	engine, err := dataplane.NewEngine(dataplane.EngineConfig{
 		ConfigPath:      cfg.HAProxyConfigPath,
 		ValidateCommand: cfg.HAProxyValidateCommand,
 		ReloadCommand:   cfg.HAProxyReloadCommand,
+		PIDFile:         cfg.HAProxyPIDFile,
+		IPManager:       ipManager,
 	})
 	if err != nil {
 		logger.Error("unable to create dataplane engine", "error", err.Error())
@@ -68,10 +82,21 @@ func main() {
 		"gracefulShutdownTimeout", cfg.GracefulShutdownTimeout.String(),
 		"logLevel", cfg.LogLevel,
 		"haproxyConfigPath", cfg.HAProxyConfigPath,
+		"haproxyPIDFile", cfg.HAProxyPIDFile,
 		"haproxyValidateEnabled", cfg.HAProxyValidateCommand != "",
 		"haproxyReloadEnabled", cfg.HAProxyReloadCommand != "",
+		"ipAttachEnabled", cfg.IPAttachEnabled,
+		"interface", cfg.Interface,
+		"ipCommand", cfg.IPCommand,
+		"ipCIDRSuffix", cfg.IPCIDRSuffix,
 		"maxRequestBodyBytes", dataplane.DefaultMaxRequestBodyBytes,
 	)
+
+	if err := engine.Bootstrap(context.Background()); err != nil {
+		logger.Error("unable to bootstrap dataplane runtime state", "error", err.Error())
+		os.Exit(1)
+	}
+	logger.Info("dataplane runtime state bootstrapped")
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,

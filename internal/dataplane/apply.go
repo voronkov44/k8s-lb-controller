@@ -36,6 +36,7 @@ type ApplyConfig struct {
 	ConfigPath      string
 	ValidateCommand string
 	ReloadCommand   string
+	PIDFile         string
 }
 
 // Applier renders and atomically applies one aggregate HAProxy config file.
@@ -55,6 +56,7 @@ func NewApplier(cfg ApplyConfig) (*Applier, error) {
 			ConfigPath:      filepath.Clean(configPath),
 			ValidateCommand: strings.TrimSpace(cfg.ValidateCommand),
 			ReloadCommand:   strings.TrimSpace(cfg.ReloadCommand),
+			PIDFile:         strings.TrimSpace(cfg.PIDFile),
 		},
 	}, nil
 }
@@ -66,10 +68,25 @@ func (a *Applier) Apply(ctx context.Context, services []provider.Service) (bool,
 		return false, fmt.Errorf("render HAProxy config: %w", err)
 	}
 
-	return a.applyRenderedConfig(ctx, renderedConfig)
+	return a.applyRenderedConfig(ctx, renderedConfig, true)
 }
 
-func (a *Applier) applyRenderedConfig(ctx context.Context, renderedConfig string) (bool, error) {
+// Bootstrap materializes the minimal empty HAProxy config for the current empty in-memory state.
+func (a *Applier) Bootstrap(ctx context.Context) error {
+	renderedConfig, err := Render(nil)
+	if err != nil {
+		return fmt.Errorf("render bootstrap HAProxy config: %w", err)
+	}
+
+	_, err = a.applyRenderedConfig(ctx, renderedConfig, a.shouldReloadOnBootstrap())
+	if err != nil {
+		return fmt.Errorf("bootstrap HAProxy config: %w", err)
+	}
+
+	return nil
+}
+
+func (a *Applier) applyRenderedConfig(ctx context.Context, renderedConfig string, reload bool) (bool, error) {
 	upToDate, err := renderedConfigMatchesCurrentFile(a.config.ConfigPath, renderedConfig)
 	if err != nil {
 		return false, err
@@ -102,11 +119,33 @@ func (a *Applier) applyRenderedConfig(ctx context.Context, renderedConfig string
 		return false, fmt.Errorf("sync config directory: %w", err)
 	}
 
-	if err := runCommand(ctx, a.config.ReloadCommand, a.config.ConfigPath); err != nil {
-		return false, fmt.Errorf("reload HAProxy: %w", err)
+	if reload {
+		if err := runCommand(ctx, a.config.ReloadCommand, a.config.ConfigPath); err != nil {
+			return false, fmt.Errorf("reload HAProxy: %w", err)
+		}
 	}
 
 	return true, nil
+}
+
+func (a *Applier) shouldReloadOnBootstrap() bool {
+	if strings.TrimSpace(a.config.ReloadCommand) == "" {
+		return false
+	}
+	if strings.TrimSpace(a.config.PIDFile) == "" {
+		return false
+	}
+
+	fileInfo, err := os.Stat(a.config.PIDFile)
+	if err != nil {
+		return false
+	}
+
+	if fileInfo.IsDir() {
+		return false
+	}
+
+	return true
 }
 
 func writeCandidateFile(configPath string, data []byte) (string, func(), error) {
@@ -152,12 +191,17 @@ func runCommand(ctx context.Context, command, configPath string) error {
 	}
 
 	replaced := strings.ReplaceAll(command, configPlaceholder, configPath)
-	args := strings.Fields(replaced)
-	if len(args) == 0 {
-		return fmt.Errorf("empty command after parsing %q", command)
-	}
+	var cmd *exec.Cmd
+	if commandRequiresShell(replaced) {
+		cmd = exec.CommandContext(ctx, "/bin/sh", "-ec", replaced)
+	} else {
+		args := strings.Fields(replaced)
+		if len(args) == 0 {
+			return fmt.Errorf("empty command after parsing %q", command)
+		}
 
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+		cmd = exec.CommandContext(ctx, args[0], args[1:]...)
+	}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		trimmedOutput := strings.TrimSpace(string(output))
@@ -169,6 +213,10 @@ func runCommand(ctx context.Context, command, configPath string) error {
 	}
 
 	return nil
+}
+
+func commandRequiresShell(command string) bool {
+	return strings.ContainsAny(command, "'\"|&;<>$`()")
 }
 
 func renderedConfigMatchesCurrentFile(configPath, renderedConfig string) (bool, error) {

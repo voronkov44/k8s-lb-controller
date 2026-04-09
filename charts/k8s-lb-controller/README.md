@@ -24,6 +24,7 @@ When `dataplane.enabled=true`:
 
 - dataplane `Deployment`
 - dataplane `Service`
+- an HAProxy sidecar in the dataplane pod
 
 ## Installation
 
@@ -72,14 +73,17 @@ For a checkout of this repository, replace the OCI reference with `./charts/k8s-
 | Value | Description |
 | --- | --- |
 | `dataplane.enabled` | Enables the dataplane Deployment and Service. |
+| `dataplane.hostNetwork`, `dataplane.shareProcessNamespace` | Pod-level runtime wiring for the real dataplane listener. |
 | `dataplane.image.repository`, `dataplane.image.tag`, `dataplane.image.pullPolicy` | Dataplane image settings. |
+| `dataplane.interface`, `dataplane.ipAttach.*` | Host interface selection and command-based external IP attachment settings for controlled environments. |
 | `dataplane.http.port` | ClusterIP Service port and container port for the dataplane API. |
 | `dataplane.http.addr` | Optional explicit `K8S_LB_DATAPLANE_HTTP_ADDR`; when empty the chart derives it from `dataplane.http.port`. |
-| `dataplane.haproxy.configPath` | Dataplane HAProxy config file path. |
-| `dataplane.haproxy.validateCommand` | Optional HAProxy validation command. |
-| `dataplane.haproxy.reloadCommand` | Optional HAProxy reload command. |
+| `dataplane.haproxy.image.*` | Sidecar image settings for the HAProxy runtime container. |
+| `dataplane.haproxy.configPath`, `dataplane.haproxy.pidFile` | Shared runtime file paths used by the API container and the HAProxy sidecar. |
+| `dataplane.haproxy.validateCommand` | HAProxy validation command run by the dataplane API container before replacing the active config. |
+| `dataplane.haproxy.reloadCommand` | HAProxy reload command run by the dataplane API container after a successful config update. |
 | `dataplane.logLevel` | Dataplane log verbosity. |
-| `dataplane.resources`, `dataplane.nodeSelector`, `dataplane.tolerations`, `dataplane.affinity` | Standard pod scheduling and resource settings for the dataplane pod. |
+| `dataplane.resources`, `dataplane.nodeSelector`, `dataplane.tolerations`, `dataplane.affinity` | Standard pod scheduling and resource settings for the dataplane API container. |
 
 ## URL Wiring
 
@@ -119,17 +123,23 @@ controller:
 
 dataplane:
   enabled: true
+  interface: eth0
+  ipAttach:
+    enabled: true
   http:
     port: 8090
   haproxy:
     configPath: /var/run/k8s-lb-dataplane/haproxy.cfg
+    pidFile: /var/run/k8s-lb-dataplane/haproxy.pid
 ```
 
 ## Notes
 
 - Local mode remains available and is still the chart default.
-- Dataplane mode deploys only the dataplane API server process at this stage.
-- The chart does not yet add host networking, interface IP attachment, netlink integration, or real external traffic publication.
+- Dataplane mode now runs the dataplane API server plus an HAProxy sidecar in one pod.
+- The stage-4 dataplane runtime is intended for controlled single-node and lab environments.
+- Dataplane mode enables host networking and command-based interface IP attachment, so it needs elevated networking permissions in the dataplane pod.
+- Netlink and broader production networking semantics are still deferred.
 - `ServiceMonitor` support remains optional and is rendered only when the existing metrics settings enable it.
 
 ## Verification

@@ -17,8 +17,9 @@ English version: [README.md](README.md)
 
 Важное ограничение текущей стадии:
 
-- Stage 3 добавляет образы, Kustomize и Helm wiring для отдельного dataplane-компонента.
-- На этой стадии ещё нет host-side IP attachment, bind-unbind логики, netlink-интеграции и полного external traffic publication semantics.
+- Stage 4 добавляет реальный HAProxy runtime для dataplane в controlled single-node и lab environment.
+- На этой стадии появляется command-based host integration для attach/detach внешних IP-адресов.
+- Netlink, multi-node/HA dataplane placement и более широкая production networking semantics всё ещё не реализованы.
 
 ## Режимы Развёртывания
 
@@ -37,13 +38,18 @@ Local mode сохраняет исходное поведение:
 Dataplane mode разворачивает два компонента:
 
 - контроллер как control-plane компонент
-- dataplane server как отдельный in-cluster HTTP API
+- отдельный dataplane pod, в котором работают:
+  - dataplane API server
+  - HAProxy sidecar, который реально слушает трафик
 
 В этом режиме:
 
 - контроллер использует `K8S_LB_CONTROLLER_PROVIDER_MODE=dataplane-api`
 - контроллер отправляет `PUT /services/{namespace}/{name}` и `DELETE /services/{namespace}/{name}` в dataplane service
 - dataplane хранит все сервисы в памяти и рендерит/применяет один aggregate HAProxy config
+- dataplane pod использует host networking и command-based `ip addr add` / `ip addr del` интеграцию, чтобы attach/detach внешние IPv4 на одном настроенном host interface
+
+Этот режим специально ориентирован на demo, local lab и controlled single-node environment.
 
 ## Структура Репозитория
 
@@ -123,6 +129,8 @@ make deploy-dataplane \
 
 `http://k8s-lb-controller-dataplane.k8s-lb-controller-system.svc:8090`
 
+Stage 4 dataplane-манифесты также включают host networking, `shareProcessNamespace`, реальный HAProxy sidecar и command-based IP attachment на интерфейс `eth0`.
+
 ## Helm
 
 Helm chart поддерживает оба режима и не удаляет local mode.
@@ -146,16 +154,21 @@ helm template k8s-lb-controller ./charts/k8s-lb-controller \
   --set dataplane.enabled=true
 ```
 
-Для stage 3 chart получил новые values:
+Для dataplane mode chart теперь использует значения:
 
 - `controller.providerMode`
 - `controller.dataplane.apiURL`
 - `controller.dataplane.apiTimeout`
 - `dataplane.enabled`
+- `dataplane.hostNetwork`
+- `dataplane.shareProcessNamespace`
 - `dataplane.image.*`
+- `dataplane.interface`
+- `dataplane.ipAttach.*`
 - `dataplane.http.port`
 - `dataplane.http.addr`
 - `dataplane.haproxy.*`
+- `dataplane.haproxy.image.*`
 - `dataplane.logLevel`
 - `dataplane.gracefulShutdownTimeout`
 - `dataplane.resources`
@@ -164,6 +177,7 @@ helm template k8s-lb-controller ./charts/k8s-lb-controller \
 - `dataplane.affinity`
 
 Если `controller.dataplane.apiURL` не задан и `dataplane.enabled=true`, chart автоматически генерирует in-cluster URL dataplane service.
+Stage 4 chart defaults также включают реальный dataplane runtime path с host networking, shared-pid HAProxy sidecar и command-based IP attachment через `dataplane.interface`.
 
 ## Runtime-Конфигурация
 
@@ -180,8 +194,13 @@ Dataplane server использует:
 - `K8S_LB_DATAPLANE_HAPROXY_CONFIG_PATH`
 - `K8S_LB_DATAPLANE_HAPROXY_VALIDATE_COMMAND`
 - `K8S_LB_DATAPLANE_HAPROXY_RELOAD_COMMAND`
+- `K8S_LB_DATAPLANE_HAPROXY_PID_FILE`
 - `K8S_LB_DATAPLANE_LOG_LEVEL`
 - `K8S_LB_DATAPLANE_GRACEFUL_SHUTDOWN_TIMEOUT`
+- `K8S_LB_DATAPLANE_IP_ATTACH_ENABLED`
+- `K8S_LB_DATAPLANE_INTERFACE`
+- `K8S_LB_DATAPLANE_IP_COMMAND`
+- `K8S_LB_DATAPLANE_IP_CIDR_SUFFIX`
 
 ## Проверка
 
@@ -201,13 +220,12 @@ helm template k8s-lb-controller ./charts/k8s-lb-controller
 helm template k8s-lb-controller ./charts/k8s-lb-controller --set controller.providerMode=dataplane-api --set dataplane.enabled=true
 ```
 
-## Что Отложено До Stage 4
+## Что Отложено До Stage 5
 
-Stage 4 должен закрыть host/network часть публикации сервисов.
-Пока это осознанно отложено:
+Stage 4 делает dataplane mode пригодным для controlled environment, но некоторые production-oriented части всё ещё осознанно отложены:
 
-- interface IP attachment / bind-unbind logic
-- netlink-based host integration
-- hostNetwork, hostPort и privileged networking setup
-- real external traffic publication semantics
+- netlink-based IP management
+- multi-node или HA dataplane placement и coordination
+- BGP, ARP/NDP, cloud-provider и другие advanced network publication semantics
+- более широкое production hardening вокруг host integration
 - live end-to-end traffic validation против развернутого dataplane

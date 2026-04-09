@@ -83,18 +83,60 @@ controller:
 dataplane:
   enabled: false
   replicaCount: 1
+  hostNetwork: true
+  shareProcessNamespace: true
   image:
     repository: ghcr.io/voronkov44/k8s-lb-controller-dataplane
     pullPolicy: IfNotPresent
     tag: ""
+  podSecurityContext:
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    runAsUser: 0
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+      add:
+        - NET_ADMIN
   http:
     port: 8090
     # Leave empty to derive K8S_LB_DATAPLANE_HTTP_ADDR from dataplane.http.port.
     addr: ""
+  interface: eth0
+  ipAttach:
+    enabled: true
+    command: /sbin/ip
+    cidrSuffix: 32
   haproxy:
+    image:
+      repository: ghcr.io/voronkov44/k8s-lb-controller-dataplane
+      pullPolicy: IfNotPresent
+      tag: ""
     configPath: /var/run/k8s-lb-dataplane/haproxy.cfg
-    validateCommand: ""
-    reloadCommand: ""
+    pidFile: /var/run/k8s-lb-dataplane/haproxy.pid
+    validateCommand: haproxy -c -f {{config}}
+    reloadCommand: >-
+      sh -ec 'pid="$(cat /var/run/k8s-lb-dataplane/haproxy.pid 2>/dev/null || true)";
+      [ -n "$pid" ] || exit 0; kill -USR2 "$pid"'
+    securityContext:
+      runAsUser: 0
+      readOnlyRootFilesystem: true
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+        add:
+          - NET_BIND_SERVICE
+    resources:
+      limits:
+        cpu: 250m
+        memory: 128Mi
+      requests:
+        cpu: 10m
+        memory: 64Mi
   logLevel: info
   gracefulShutdownTimeout: 15s
   terminationGracePeriodSeconds: 20

@@ -19,16 +19,21 @@ spec:
         kubectl.kubernetes.io/default-container: dataplane
     spec:
       automountServiceAccountToken: false
+      hostNetwork: {{ ternary "true" "false" .Values.dataplane.hostNetwork }}
+      {{- if .Values.dataplane.hostNetwork }}
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- end }}
+      shareProcessNamespace: {{ ternary "true" "false" .Values.dataplane.shareProcessNamespace }}
       terminationGracePeriodSeconds: {{ .Values.dataplane.terminationGracePeriodSeconds }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       securityContext:
-        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+        {{- toYaml .Values.dataplane.podSecurityContext | nindent 8 }}
       containers:
         - name: dataplane
-          image: "{{ .Values.dataplane.image.repository }}:{{ default .Chart.AppVersion .Values.dataplane.image.tag }}"
+          image: {{ include "k8s-lb-controller.dataplaneImage" . | quote }}
           imagePullPolicy: {{ .Values.dataplane.image.pullPolicy }}
           command:
             - /dataplane
@@ -41,10 +46,20 @@ spec:
               value: {{ .Values.dataplane.haproxy.validateCommand | quote }}
             - name: K8S_LB_DATAPLANE_HAPROXY_RELOAD_COMMAND
               value: {{ .Values.dataplane.haproxy.reloadCommand | quote }}
+            - name: K8S_LB_DATAPLANE_HAPROXY_PID_FILE
+              value: {{ .Values.dataplane.haproxy.pidFile | quote }}
             - name: K8S_LB_DATAPLANE_LOG_LEVEL
               value: {{ .Values.dataplane.logLevel | quote }}
             - name: K8S_LB_DATAPLANE_GRACEFUL_SHUTDOWN_TIMEOUT
               value: {{ .Values.dataplane.gracefulShutdownTimeout | quote }}
+            - name: K8S_LB_DATAPLANE_IP_ATTACH_ENABLED
+              value: {{ ternary "true" "false" .Values.dataplane.ipAttach.enabled | quote }}
+            - name: K8S_LB_DATAPLANE_INTERFACE
+              value: {{ .Values.dataplane.interface | quote }}
+            - name: K8S_LB_DATAPLANE_IP_COMMAND
+              value: {{ .Values.dataplane.ipAttach.command | quote }}
+            - name: K8S_LB_DATAPLANE_IP_CIDR_SUFFIX
+              value: {{ .Values.dataplane.ipAttach.cidrSuffix | quote }}
           ports:
             - name: http
               containerPort: {{ .Values.dataplane.http.port }}
@@ -62,9 +77,27 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 10
           securityContext:
-            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+            {{- toYaml .Values.dataplane.containerSecurityContext | nindent 12 }}
           resources:
             {{- toYaml .Values.dataplane.resources | nindent 12 }}
+          volumeMounts:
+            - name: runtime-dir
+              mountPath: {{ dir .Values.dataplane.haproxy.configPath | quote }}
+        - name: haproxy
+          image: {{ include "k8s-lb-controller.dataplaneHAProxyImage" . | quote }}
+          imagePullPolicy: {{ .Values.dataplane.haproxy.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              while [ ! -s {{ .Values.dataplane.haproxy.configPath | quote }} ]; do
+                sleep 0.2
+              done
+              exec haproxy -W -db -f {{ .Values.dataplane.haproxy.configPath | quote }} -p {{ .Values.dataplane.haproxy.pidFile | quote }}
+          securityContext:
+            {{- toYaml .Values.dataplane.haproxy.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.dataplane.haproxy.resources | nindent 12 }}
           volumeMounts:
             - name: runtime-dir
               mountPath: {{ dir .Values.dataplane.haproxy.configPath | quote }}

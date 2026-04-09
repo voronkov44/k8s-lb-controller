@@ -24,6 +24,7 @@
 
 - `Deployment` dataplane
 - `Service` dataplane
+- HAProxy sidecar внутри dataplane pod
 
 ## Установка
 
@@ -72,14 +73,17 @@ helm install k8s-lb-controller oci://ghcr.io/voronkov44/charts/k8s-lb-controller
 | Value | Описание |
 | --- | --- |
 | `dataplane.enabled` | Включает dataplane Deployment и Service. |
+| `dataplane.hostNetwork`, `dataplane.shareProcessNamespace` | Pod-level wiring для реального dataplane listener. |
 | `dataplane.image.repository`, `dataplane.image.tag`, `dataplane.image.pullPolicy` | Настройки образа dataplane. |
+| `dataplane.interface`, `dataplane.ipAttach.*` | Выбор host interface и command-based attach/detach внешних IP для controlled environment. |
 | `dataplane.http.port` | ClusterIP Service port и container port для dataplane API. |
 | `dataplane.http.addr` | Необязательный явный `K8S_LB_DATAPLANE_HTTP_ADDR`; если пусто, chart выводит его из `dataplane.http.port`. |
-| `dataplane.haproxy.configPath` | Путь к HAProxy config внутри dataplane. |
-| `dataplane.haproxy.validateCommand` | Необязательная команда валидации HAProxy config. |
-| `dataplane.haproxy.reloadCommand` | Необязательная команда reload HAProxy. |
+| `dataplane.haproxy.image.*` | Настройки образа sidecar-контейнера с HAProxy runtime. |
+| `dataplane.haproxy.configPath`, `dataplane.haproxy.pidFile` | Shared runtime paths, которые используют и dataplane API container, и HAProxy sidecar. |
+| `dataplane.haproxy.validateCommand` | Команда валидации HAProxy config перед заменой active config. |
+| `dataplane.haproxy.reloadCommand` | Команда reload HAProxy после успешного обновления config. |
 | `dataplane.logLevel` | Уровень логирования dataplane. |
-| `dataplane.resources`, `dataplane.nodeSelector`, `dataplane.tolerations`, `dataplane.affinity` | Стандартные настройки ресурсов и размещения pod dataplane. |
+| `dataplane.resources`, `dataplane.nodeSelector`, `dataplane.tolerations`, `dataplane.affinity` | Стандартные настройки ресурсов и размещения для dataplane API container. |
 
 ## Как Формируется URL
 
@@ -119,17 +123,23 @@ controller:
 
 dataplane:
   enabled: true
+  interface: eth0
+  ipAttach:
+    enabled: true
   http:
     port: 8090
   haproxy:
     configPath: /var/run/k8s-lb-dataplane/haproxy.cfg
+    pidFile: /var/run/k8s-lb-dataplane/haproxy.pid
 ```
 
 ## Примечания
 
 - Local mode никуда не делся и остаётся режимом по умолчанию для chart.
-- Dataplane mode на этой стадии разворачивает только dataplane API server process.
-- Chart пока не добавляет host networking, interface IP attachment, netlink integration или real external traffic publication.
+- Dataplane mode теперь запускает dataplane API server и HAProxy sidecar в одном pod.
+- Stage 4 ориентирован на controlled single-node и lab environment.
+- Dataplane mode включает host networking и command-based interface IP attachment, поэтому dataplane pod требует повышенных networking permissions.
+- Netlink и более широкие production networking semantics пока остаются отложенными.
 - Поддержка `ServiceMonitor` остаётся опциональной и рендерится только при включённых существующих metrics settings.
 
 ## Проверка

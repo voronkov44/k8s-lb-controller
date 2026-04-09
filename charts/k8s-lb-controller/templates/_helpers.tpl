@@ -70,6 +70,14 @@ app.kubernetes.io/component: dataplane
 {{- end -}}
 {{- end -}}
 
+{{- define "k8s-lb-controller.dataplaneImage" -}}
+{{- printf "%s:%s" .Values.dataplane.image.repository (default .Chart.AppVersion .Values.dataplane.image.tag) -}}
+{{- end -}}
+
+{{- define "k8s-lb-controller.dataplaneHAProxyImage" -}}
+{{- printf "%s:%s" .Values.dataplane.haproxy.image.repository (default .Chart.AppVersion .Values.dataplane.haproxy.image.tag) -}}
+{{- end -}}
+
 {{- define "k8s-lb-controller.dataplaneServiceURL" -}}
 {{- printf "http://%s.%s.svc:%d" (include "k8s-lb-controller.dataplaneFullname" .) .Release.Namespace (int .Values.dataplane.http.port) -}}
 {{- end -}}
@@ -121,6 +129,14 @@ app.kubernetes.io/component: dataplane
   {{- $dataplaneTimeoutSeconds := include "k8s-lb-controller.durationSeconds" .Values.dataplane.gracefulShutdownTimeout | trim -}}
   {{- if and $dataplaneTimeoutSeconds (lt (float64 .Values.dataplane.terminationGracePeriodSeconds) ($dataplaneTimeoutSeconds | float64)) -}}
     {{- fail (printf "dataplane.terminationGracePeriodSeconds (%d) must be greater than or equal to dataplane.gracefulShutdownTimeout (%s)" (int .Values.dataplane.terminationGracePeriodSeconds) .Values.dataplane.gracefulShutdownTimeout) -}}
+  {{- end -}}
+  {{- if .Values.dataplane.ipAttach.enabled -}}
+    {{- if not (.Values.dataplane.interface | trim) -}}
+      {{- fail "dataplane.interface must be set when dataplane.ipAttach.enabled=true" -}}
+    {{- end -}}
+  {{- end -}}
+  {{- if ne (dir .Values.dataplane.haproxy.configPath) (dir .Values.dataplane.haproxy.pidFile) -}}
+    {{- fail "dataplane.haproxy.configPath and dataplane.haproxy.pidFile must use the same runtime directory" -}}
   {{- end -}}
 {{- end -}}
 {{- if eq .Values.controller.providerMode "dataplane-api" -}}

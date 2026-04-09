@@ -158,3 +158,53 @@ func TestApplierReturnsReloadFailureAfterWritingConfig(t *testing.T) {
 		t.Fatalf("config file was not updated before reload failure:\n%s", rendered)
 	}
 }
+
+func TestApplierBootstrapWritesMinimalConfig(t *testing.T) {
+	configPath := testConfigPath(t)
+	applier, err := NewApplier(ApplyConfig{ConfigPath: configPath})
+	if err != nil {
+		t.Fatalf("NewApplier() error = %v", err)
+	}
+
+	if err := applier.Bootstrap(context.Background()); err != nil {
+		t.Fatalf("Bootstrap() error = %v", err)
+	}
+
+	rendered := readConfigFile(t, configPath)
+	if !strings.Contains(rendered, "defaults") {
+		t.Fatalf("bootstrap config missing defaults section:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "frontend fe_") {
+		t.Fatalf("bootstrap config unexpectedly contains service frontends:\n%s", rendered)
+	}
+}
+
+func TestApplierBootstrapSkipsReloadWhenPIDFileIsMissing(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "haproxy.cfg")
+	reloadScriptPath := filepath.Join(tempDir, "reload.sh")
+	reloadMarkerPath := filepath.Join(tempDir, "reload-count")
+
+	reloadScript := "#!/bin/sh\n" +
+		"echo reload >> " + reloadMarkerPath + "\n"
+	if err := os.WriteFile(reloadScriptPath, []byte(reloadScript), 0o700); err != nil {
+		t.Fatalf("WriteFile(reloadScript) error = %v", err)
+	}
+
+	applier, err := NewApplier(ApplyConfig{
+		ConfigPath:    configPath,
+		ReloadCommand: reloadScriptPath,
+		PIDFile:       filepath.Join(tempDir, "missing.pid"),
+	})
+	if err != nil {
+		t.Fatalf("NewApplier() error = %v", err)
+	}
+
+	if err := applier.Bootstrap(context.Background()); err != nil {
+		t.Fatalf("Bootstrap() error = %v", err)
+	}
+
+	if _, err := os.Stat(reloadMarkerPath); !os.IsNotExist(err) {
+		t.Fatalf("reload marker exists, want bootstrap without reload: %v", err)
+	}
+}
