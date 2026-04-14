@@ -35,6 +35,14 @@ defaults
     timeout server 30s
 `
 
+const bootstrapFrontendSection = `
+# Bootstrap listener keeps HAProxy runnable before the first managed Service exists.
+frontend fe_bootstrap_loopback
+    bind 127.0.0.2:65535
+    mode http
+    http-request return status 204
+`
+
 // Render produces a deterministic HAProxy configuration for the provided Services.
 func Render(services []provider.Service) (string, error) {
 	sortedServices := make([]provider.Service, 0, len(services))
@@ -44,6 +52,11 @@ func Render(services []provider.Service) (string, error) {
 
 	var builder strings.Builder
 	builder.WriteString(configHeader)
+
+	if len(sortedServices) == 0 {
+		builder.WriteString(bootstrapFrontendSection)
+		return builder.String(), nil
+	}
 
 	for _, service := range sortedServiceListFromSlice(sortedServices) {
 		if err := ValidateService(service); err != nil {

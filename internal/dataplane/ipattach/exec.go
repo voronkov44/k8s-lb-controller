@@ -46,7 +46,7 @@ func (m *execManager) List(ctx context.Context) ([]netip.Addr, error) {
 		return nil, commandError("list interface addresses", err, output)
 	}
 
-	addresses, err := parseInterfaceAddrs(output)
+	addresses, err := parseManagedInterfaceAddrs(output, m.config.CIDRSuffix)
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +146,7 @@ func commandError(action string, err error, output []byte) error {
 	return fmt.Errorf("%s: %w: %s", action, err, trimmedOutput)
 }
 
-func parseInterfaceAddrs(output []byte) ([]netip.Addr, error) {
+func parseManagedInterfaceAddrs(output []byte, managedCIDRSuffix int) ([]netip.Addr, error) {
 	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
 	addresses := make([]netip.Addr, 0, len(lines))
 
@@ -165,7 +165,7 @@ func parseInterfaceAddrs(output []byte) ([]netip.Addr, error) {
 			if err != nil {
 				return nil, fmt.Errorf("parse interface address %q: %w", fields[index+1], err)
 			}
-			if prefix.Addr().Is4() {
+			if prefix.Addr().Is4() && prefix.Bits() == managedCIDRSuffix {
 				addresses = append(addresses, prefix.Addr())
 			}
 			break

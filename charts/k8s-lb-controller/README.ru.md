@@ -1,13 +1,13 @@
 # Helm Chart `k8s-lb-controller`
 
-Этот chart разворачивает `k8s-lb-controller` и поддерживает оба deployment mode, которые теперь есть в репозитории:
+Этот chart устанавливает `k8s-lb-controller` и поддерживает оба режима провайдера контроллера, которые есть в репозитории сейчас:
 
-- `local-haproxy`: controller-only mode, он по-прежнему используется по умолчанию
-- `dataplane-api`: режим controller + standalone dataplane server
+- `local-haproxy`: режим по умолчанию только с контроллером
+- `dataplane-api`: контроллер плюс отдельные `Deployment` и `Service` для dataplane
 
-[English version](README.md)
+English version: [README.md](README.md)
 
-Общий контекст по архитектуре и rollout см. в [README.md](../../README.md).
+Общий обзор репозитория: [README.ru.md](../../README.ru.md)
 
 ## Что Устанавливает Chart
 
@@ -17,46 +17,46 @@
 - `ServiceAccount`
 - RBAC для `Service`, `Service/status` и `EndpointSlice`
 - `Role` и `RoleBinding` для leader election
-- optional metrics `Service`
-- optional `ServiceMonitor`
+- необязательный metrics `Service`
+- необязательный `ServiceMonitor`
 
 Когда `dataplane.enabled=true`:
 
 - `Deployment` dataplane
 - `Service` dataplane
-- HAProxy sidecar внутри dataplane pod
+- sidecar-контейнер HAProxy внутри pod dataplane
+
+По умолчанию chart разворачивает только контроллер. Ресурсы dataplane добавляются только при включении режима dataplane.
 
 ## Установка
 
-OCI chart reference:
+OCI-адрес chart:
 
 `oci://ghcr.io/voronkov44/charts/k8s-lb-controller`
 
-### Local Mode
+Установка локального режима из локальной копии репозитория:
 
 ```bash
-helm install k8s-lb-controller oci://ghcr.io/voronkov44/charts/k8s-lb-controller \
-  --version 0.1.0 \
+helm install k8s-lb-controller ./charts/k8s-lb-controller \
   -n k8s-lb-controller-system \
   --create-namespace
 ```
 
-### Dataplane Mode
+Установка режима dataplane из локальной копии репозитория:
 
 ```bash
-helm install k8s-lb-controller oci://ghcr.io/voronkov44/charts/k8s-lb-controller \
-  --version 0.1.0 \
+helm install k8s-lb-controller ./charts/k8s-lb-controller \
   -n k8s-lb-controller-system \
   --create-namespace \
   --set controller.providerMode=dataplane-api \
   --set dataplane.enabled=true
 ```
 
-Если вы работаете из checkout этого репозитория, можно заменить OCI reference на `./charts/k8s-lb-controller`.
+Если нужен опубликованный OCI chart, замените `./charts/k8s-lb-controller` на OCI reference выше и добавьте `--version 0.1.0`.
 
 ## Важные Values
 
-### Controller Values
+### Значения Контроллера
 
 | Value | Описание |
 | --- | --- |
@@ -64,56 +64,66 @@ helm install k8s-lb-controller oci://ghcr.io/voronkov44/charts/k8s-lb-controller
 | `controller.providerMode` | `local-haproxy` или `dataplane-api`. |
 | `controller.loadBalancerClass` | Управляемый `spec.loadBalancerClass`. |
 | `controller.ipPool` | Статический IPv4-пул для выделения внешних адресов. |
-| `controller.dataplane.apiURL` | Необязательный явный override для dataplane API URL. |
-| `controller.dataplane.apiTimeout` | Таймаут запросов от контроллера к dataplane API. |
-| `controller.haproxy.*` | Настройки локального HAProxy provider для режима `local-haproxy`. |
+| `controller.dataplane.apiURL` | Необязательный явный URL dataplane API. |
+| `controller.dataplane.apiTimeout` | Таймаут запросов контроллера к dataplane API. |
+| `controller.haproxy.*` | Настройки локального HAProxy-провайдера для режима `local-haproxy`. |
 
-### Dataplane Values
+### Значения Dataplane
 
 | Value | Описание |
 | --- | --- |
-| `dataplane.enabled` | Включает dataplane Deployment и Service. |
-| `dataplane.hostNetwork`, `dataplane.shareProcessNamespace` | Pod-level wiring для реального dataplane listener. |
-| `dataplane.image.repository`, `dataplane.image.tag`, `dataplane.image.pullPolicy` | Настройки образа dataplane. |
-| `dataplane.interface`, `dataplane.ipAttach.*` | Выбор host interface и настроек netlink или exec-based attach/detach внешних IP для controlled environment. |
-| `dataplane.http.port` | ClusterIP Service port и container port для dataplane API. |
-| `dataplane.http.addr` | Необязательный явный `K8S_LB_DATAPLANE_HTTP_ADDR`; если пусто, chart выводит его из `dataplane.http.port`. |
-| `dataplane.haproxy.image.*` | Настройки образа sidecar-контейнера с HAProxy runtime. |
-| `dataplane.haproxy.configPath`, `dataplane.haproxy.pidFile` | Shared runtime paths, которые используют и dataplane API container, и HAProxy sidecar. |
-| `dataplane.haproxy.validateCommand` | Команда валидации HAProxy config перед заменой active config. |
-| `dataplane.haproxy.reloadCommand` | Команда reload HAProxy после успешного обновления config. |
-| `dataplane.logLevel` | Уровень логирования dataplane. |
-| `dataplane.resources`, `dataplane.nodeSelector`, `dataplane.tolerations`, `dataplane.affinity` | Стандартные настройки ресурсов и размещения для dataplane API container. |
+| `dataplane.enabled` | Включает `Deployment` и `Service` dataplane. |
+| `dataplane.image.repository`, `dataplane.image.tag`, `dataplane.image.pullPolicy` | Настройки образа dataplane API. |
+| `dataplane.http.port`, `dataplane.http.addr` | Адрес прослушивания dataplane API и порт сервиса. |
+| `dataplane.hostNetwork`, `dataplane.shareProcessNamespace` | Настройки runtime для внутрикластерного развёртывания dataplane. |
+| `dataplane.interface` | Интерфейс хоста, к которому привязывается внешний IP в режиме dataplane. |
+| `dataplane.ipAttach.enabled` | Включает привязку внешнего IP на стороне хоста. |
+| `dataplane.ipAttach.mode` | Backend привязки внешнего IP: `netlink` или `exec`. |
+| `dataplane.ipAttach.command`, `dataplane.ipAttach.cidrSuffix` | Команда для exec-backend и ширина прикрепляемого CIDR. |
+| `dataplane.haproxy.image.*` | Настройки образа sidecar-контейнера HAProxy. |
+| `dataplane.haproxy.configPath`, `dataplane.haproxy.pidFile` | Общие runtime-файлы, которые используют контейнер dataplane API и sidecar-контейнер HAProxy. |
+| `dataplane.haproxy.validateCommand`, `dataplane.haproxy.reloadCommand` | Команды для проверки конфигурации и атомарного reload. |
+| `dataplane.logLevel`, `dataplane.gracefulShutdownTimeout` | Поведение runtime dataplane. |
+| `dataplane.resources`, `dataplane.nodeSelector`, `dataplane.tolerations`, `dataplane.affinity` | Настройки ресурсов и размещения для pod dataplane API. |
 
-## Как Формируется URL
+### Значения Метрик и Мониторинга
 
-Когда:
+| Value | Описание |
+| --- | --- |
+| `metrics.service.enabled` | Создаёт metrics `Service`. |
+| `metrics.serviceMonitor.enabled` | Создаёт `ServiceMonitor`, если нужна интеграция с Prometheus Operator. |
+
+## Как Формируется URL Dataplane
+
+Когда одновременно выполняются условия:
 
 - `controller.providerMode=dataplane-api`
 - `dataplane.enabled=true`
 - `controller.dataplane.apiURL` пустой
 
-chart автоматически формирует controller-side dataplane URL:
+chart автоматически формирует URL dataplane для контроллера:
 
 `http://<release>-k8s-lb-controller-dataplane.<namespace>.svc:<dataplane.http.port>`
 
-Если `controller.dataplane.apiURL` задан явно, он имеет приоритет над автоматически сгенерированным in-cluster service URL.
+Если `controller.dataplane.apiURL` задан явно, он имеет приоритет над автоматически сформированным внутрикластерным URL сервиса.
+
+Chart также проверяет, что `controller.providerMode=dataplane-api` должен сопровождаться либо `dataplane.enabled=true`, либо непустым `controller.dataplane.apiURL`.
 
 ## Примеры Values
 
-### Local Mode
+### Локальный Режим
 
 ```yaml
 controller:
   providerMode: local-haproxy
   loadBalancerClass: lab.local/service-lb
   ipPool:
-    - 10.0.0.240
-    - 10.0.0.241
-    - 10.0.0.242
+    - 203.0.113.10
+    - 203.0.113.11
+    - 203.0.113.12
 ```
 
-### Dataplane Mode
+### Режим Dataplane
 
 ```yaml
 controller:
@@ -134,15 +144,14 @@ dataplane:
     pidFile: /var/run/k8s-lb-dataplane/haproxy.pid
 ```
 
-## Примечания
+## Область Применения и Ограничения
 
-- Local mode никуда не делся и остаётся режимом по умолчанию для chart.
-- Dataplane mode теперь запускает dataplane API server и HAProxy sidecar в одном pod.
-- Stage 5 ориентирован на controlled single-node и lab environment.
-- Dataplane mode включает host networking и повышенные networking permissions для host-side IP attachment.
-- `dataplane.ipAttach.mode` по умолчанию равен `netlink`, а `exec` остаётся fallback-вариантом.
-- Более широкие production networking semantics пока остаются отложенными.
-- Поддержка `ServiceMonitor` остаётся опциональной и рендерится только при включённых существующих metrics settings.
+- Локальный режим по-прежнему доступен, обратно совместим и остаётся режимом chart по умолчанию.
+- Режим dataplane разворачивает отдельный dataplane API и sidecar-контейнер HAProxy. Это не распределённая многовузловая dataplane-система.
+- В текущих значениях chart режим dataplane использует host networking, `shareProcessNamespace` и привязку внешнего IP на стороне хоста.
+- `dataplane.ipAttach.mode` по умолчанию равен `netlink`; `exec` остаётся запасным вариантом.
+- Текущее развёртывание dataplane предназначено для контролируемых одновузловых и лабораторных окружений.
+- Координация dataplane между несколькими узлами, HA-сценарии, BGP, ARP, NDP, публикация по модели cloud provider и более широкое производственное усиление надёжности намеренно остаются вне текущей области применения.
 
 ## Проверка
 
@@ -151,7 +160,14 @@ helm lint ./charts/k8s-lb-controller
 helm lint ./charts/k8s-lb-controller --set controller.providerMode=dataplane-api --set dataplane.enabled=true
 helm template k8s-lb-controller ./charts/k8s-lb-controller
 helm template k8s-lb-controller ./charts/k8s-lb-controller --set controller.providerMode=dataplane-api --set dataplane.enabled=true
+make verify-dataplane
+make smoke-dataplane-kind
 ```
+
+Подробные инструкции по проверке в контролируемом окружении и по проверке готовности:
+
+- smoke-проверка: [../../docs/dataplane-smoke.md](../../docs/dataplane-smoke.md), [../../docs/dataplane-smoke.ru.md](../../docs/dataplane-smoke.ru.md)
+- чеклист готовности: [../../docs/release-checklist.md](../../docs/release-checklist.md), [../../docs/release-checklist.ru.md](../../docs/release-checklist.ru.md)
 
 ## Удаление
 

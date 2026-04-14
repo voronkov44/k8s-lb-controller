@@ -51,7 +51,7 @@ func (m *netlinkManager) List(context.Context) ([]netip.Addr, error) {
 
 	addresses := make([]netip.Addr, 0, len(prefixes))
 	for _, prefix := range prefixes {
-		if prefix.Addr().Is4() {
+		if prefix.Addr().Is4() && prefix.Bits() == m.config.CIDRSuffix {
 			addresses = append(addresses, prefix.Addr())
 		}
 	}

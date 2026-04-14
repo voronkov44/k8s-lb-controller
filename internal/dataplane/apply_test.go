@@ -174,8 +174,46 @@ func TestApplierBootstrapWritesMinimalConfig(t *testing.T) {
 	if !strings.Contains(rendered, "defaults") {
 		t.Fatalf("bootstrap config missing defaults section:\n%s", rendered)
 	}
-	if strings.Contains(rendered, "frontend fe_") {
+	if !strings.Contains(rendered, "frontend fe_bootstrap_loopback") {
+		t.Fatalf("bootstrap config missing bootstrap frontend:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "bind 127.0.0.2:65535") {
+		t.Fatalf("bootstrap config missing loopback bind:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "frontend fe_default_") {
 		t.Fatalf("bootstrap config unexpectedly contains service frontends:\n%s", rendered)
+	}
+}
+
+func TestApplierBootstrapConfigIsReplacedByRenderedServiceState(t *testing.T) {
+	configPath := testConfigPath(t)
+	applier, err := NewApplier(ApplyConfig{ConfigPath: configPath})
+	if err != nil {
+		t.Fatalf("NewApplier() error = %v", err)
+	}
+
+	if err := applier.Bootstrap(context.Background()); err != nil {
+		t.Fatalf("Bootstrap() error = %v", err)
+	}
+
+	changed, err := applier.Apply(context.Background(), []provider.Service{
+		newTestService("demo", "203.0.113.10", []provider.ServicePort{
+			{Name: "http", Protocol: "TCP", Port: 80, Backends: []provider.BackendEndpoint{{Address: "10.0.0.10", Port: 8080}}},
+		}),
+	})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if !changed {
+		t.Fatal("Apply() changed = false, want true")
+	}
+
+	rendered := readConfigFile(t, configPath)
+	if strings.Contains(rendered, "frontend fe_bootstrap_loopback") {
+		t.Fatalf("rendered service config still contains bootstrap frontend:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "frontend fe_default_demo_80_http_tcp") {
+		t.Fatalf("rendered service config missing expected frontend:\n%s", rendered)
 	}
 }
 

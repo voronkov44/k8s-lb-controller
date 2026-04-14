@@ -108,6 +108,25 @@ func TestExecManagerReturnsCommandFailure(t *testing.T) {
 	}
 }
 
+func TestExecManagerListFiltersOutNonManagedPrefixLengths(t *testing.T) {
+	runner := newFakeRunner()
+	runner.listOutput = strings.Join([]string{
+		"2: eth0    inet 172.18.0.2/16 scope global eth0",
+		"2: eth0    inet 203.0.113.10/32 scope global eth0",
+	}, "\n")
+	manager := newTestExecManager(t, runner)
+
+	addresses, err := manager.List(context.Background())
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+
+	want := []netip.Addr{netip.MustParseAddr("203.0.113.10")}
+	if !slices.Equal(addresses, want) {
+		t.Fatalf("List() = %v, want %v", addresses, want)
+	}
+}
+
 func newTestExecManager(t *testing.T, runner Runner) Manager {
 	t.Helper()
 
@@ -126,11 +145,12 @@ func newTestExecManager(t *testing.T, runner Runner) Manager {
 }
 
 type fakeRunner struct {
-	addresses map[string]struct{}
-	commands  []string
-	failAdd   error
-	failDel   error
-	failList  error
+	addresses  map[string]struct{}
+	commands   []string
+	listOutput string
+	failAdd    error
+	failDel    error
+	failList   error
 }
 
 func newFakeRunner(initialAddrs ...string) *fakeRunner {
@@ -150,6 +170,9 @@ func (r *fakeRunner) CombinedOutput(_ context.Context, name string, args ...stri
 	case slices.Equal(args, []string{"-4", "-o", "addr", "show", "dev", "eth0"}):
 		if r.failList != nil {
 			return []byte("show failed"), r.failList
+		}
+		if r.listOutput != "" {
+			return []byte(r.listOutput), nil
 		}
 		return []byte(r.renderList()), nil
 	case len(args) == 5 && args[0] == "addr" && args[1] == "add":

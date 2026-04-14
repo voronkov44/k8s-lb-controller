@@ -1,78 +1,65 @@
 # k8s-lb-controller
 
-`k8s-lb-controller` — Kubernetes-контроллер на базе `controller-runtime`, который управляет выбранными `Service` типа `LoadBalancer`.
-Он выделяет внешние IPv4-адреса из статического пула, находит ready backend-адреса через `EndpointSlice` и синхронизирует требуемое состояние через provider abstraction.
+`k8s-lb-controller` — Kubernetes-контроллер на базе `controller-runtime`, который управляет выбранными `Service` типа `LoadBalancer`. Он выделяет внешние IPv4-адреса из статического пула, находит готовые адреса backend через `EndpointSlice` и синхронизирует состояние балансировщика через абстракцию провайдера.
 
 English version: [README.md](README.md)
 
-## Текущий Объём Работ
+## Текущее Состояние Проекта
 
-Сейчас репозиторий поддерживает два runtime-режима провайдера для контроллера:
+Сейчас контроллер поддерживает два режима работы провайдера:
 
-- `local-haproxy`: исходный локальный файловый HAProxy provider, он по-прежнему используется по умолчанию
-- `dataplane-api`: контроллер отправляет desired state в отдельный dataplane HTTP API
+- `local-haproxy`: исходный режим только с контроллером. Он по-прежнему доступен, обратно совместим и остаётся режимом по умолчанию.
+- `dataplane-api`: контроллер отправляет требуемое состояние в отдельный dataplane-компонент по HTTP.
 
-Отдельный dataplane-компонент реализован в `cmd/dataplane`.
-Он хранит полное desired state в памяти, рендерит один детерминированный HAProxy config для всех управляемых сервисов и применяет его атомарно.
+Отдельный dataplane расположен в `cmd/dataplane/main.go`. В текущей реализации он обеспечивает:
 
-Важное ограничение текущей стадии:
+- HTTP API для синхронизации между контроллером и dataplane
+- хранилище требуемого состояния управляемых сервисов в памяти
+- детерминированный рендеринг конфигурации HAProxy
+- атомарное применение конфигурации с поддержкой validate/reload
+- Kubernetes-развёртывание, где контейнер API работает вместе с отдельным sidecar-контейнером HAProxy
+- два варианта привязки внешнего IP: `netlink` и `exec`; по умолчанию используется `netlink`, `exec` оставлен как запасной вариант
 
-- Stage 5 сохраняет реальный HAProxy runtime для dataplane в controlled single-node и lab environment.
-- Теперь по умолчанию используется netlink-based host-side IP attachment, а stage-4 exec path остаётся fallback-вариантом.
-- Multi-node/HA dataplane placement и более широкая production networking semantics всё ещё не реализованы.
+## Что Уже Проверено
+
+Путь с dataplane уже успешно проверен в контролируемом сценарии Kind и лабораторного стенда:
+
+- кластер создаётся
+- разворачиваются контроллер и dataplane
+- разворачивается демонстрационный backend и `Service` типа `LoadBalancer`
+- внешний IP выделяется и привязывается к сетевому интерфейсу хоста dataplane
+- HAProxy начинает слушать на выделенном внешнем IP
+- сгенерированная конфигурация HAProxy содержит ожидаемые `bind` и backend-записи
+- HTTP-запрос через внешний IP возвращает страницу nginx
+
+Это означает, что режим dataplane уже работает в контролируемых одновузловых и лабораторных окружениях. Это не означает, что проект уже является полнофункциональной промышленной многовузловой платформой балансировки нагрузки.
 
 ## Режимы Развёртывания
 
-### Local Mode
+### Локальный Режим
 
-Local mode сохраняет исходное поведение:
+Локальный режим сохраняет исходное поведение:
 
-- запускается только контроллер
-- provider mode равен `local-haproxy`
-- HAProxy config пишет сам контроллер
+- разворачивается только контроллер
+- `controller.providerMode` равен `local-haproxy`
+- контроллер сам формирует и применяет конфигурацию HAProxy
 
-Этот режим остаётся режимом по умолчанию в коде, Kustomize и Helm.
+Этот режим остаётся режимом по умолчанию в кодовой базе, Kustomize и Helm.
 
-### Dataplane Mode
+### Режим Dataplane
 
-Dataplane mode разворачивает два компонента:
+Режим dataplane разворачивает контроллер и отдельный dataplane:
 
-- контроллер как control-plane компонент
-- отдельный dataplane pod, в котором работают:
-  - dataplane API server
-  - HAProxy sidecar, который реально слушает трафик
+- контроллер работает как управляющий компонент
+- dataplane API хранит требуемое состояние в памяти и формирует общую конфигурацию HAProxy
+- в dataplane-развёртывании запускается отдельный sidecar-контейнер HAProxy
+- pod dataplane использует сетевой режим хоста и привязывает выделенный внешний IP к одному настроенному сетевому интерфейсу
 
-В этом режиме:
+Этот режим предназначен для контролируемых одновузловых и лабораторных окружений.
 
-- контроллер использует `K8S_LB_CONTROLLER_PROVIDER_MODE=dataplane-api`
-- контроллер отправляет `PUT /services/{namespace}/{name}` и `DELETE /services/{namespace}/{name}` в dataplane service
-- dataplane хранит все сервисы в памяти и рендерит/применяет один aggregate HAProxy config
-- dataplane pod использует host networking и host-side IP attachment на одном настроенном interface
-- stage 5 по умолчанию использует netlink backend и сохраняет stage-4 exec backend как fallback
+## Сборка, Локальный Запуск и Развёртывание
 
-Этот режим специально ориентирован на demo, local lab и controlled single-node environment.
-
-## Структура Репозитория
-
-```text
-cmd/main.go                      Бинарь контроллера
-cmd/dataplane/main.go            Бинарь dataplane
-internal/config/                 Runtime-конфигурация контроллера
-internal/dataplane/              Reusable dataplane engine, HTTP handler, render/apply logic
-internal/controller/             Логика reconcile для Service
-internal/ipam/                   Выделение адресов из статического IPv4-пула
-internal/backends/               Backend discovery по EndpointSlice
-internal/provider/               Provider interface и provider implementations
-internal/provider/haproxy/       Локальный файловый HAProxy provider
-config/default/                  Kustomize entrypoint для controller-only local mode
-config/dataplane/                Manifest Deployment и Service для dataplane
-config/default-dataplane/        Kustomize entrypoint для controller + dataplane mode
-charts/k8s-lb-controller/        Helm chart
-```
-
-## Build Targets
-
-В репозитории теперь есть отдельные build path для обоих бинарей и обоих образов:
+Цели сборки:
 
 ```sh
 make build
@@ -81,7 +68,14 @@ make docker-build
 make docker-build-dataplane
 ```
 
-Полезные deployment-oriented target:
+Цели для локального запуска:
+
+```sh
+make run
+make run-dataplane
+```
+
+Цели для развёртывания:
 
 ```sh
 make deploy
@@ -90,35 +84,38 @@ make build-installer
 make build-installer-dataplane
 ```
 
-## Kustomize
-
-Старый controller-only Kustomize entrypoint сохранён без изменений:
-
-- local mode: `config/default`
-
-Также добавлен отдельный additive entrypoint для controller + dataplane mode:
-
-- dataplane mode: `config/default-dataplane`
-
-### Рендер Local Mode
+Цели для проверки:
 
 ```sh
-./bin/kustomize build config/default
+make verify-dataplane
+make smoke-dataplane-kind
+make test-e2e-dataplane
+make kind-up-dataplane
+make kind-down-dataplane
 ```
 
-### Рендер Dataplane Mode
+## Kustomize
+
+В репозитории есть две точки входа Kustomize:
+
+- `config/default`: локальный режим только с контроллером
+- `config/default-dataplane`: режим с контроллером и отдельным dataplane
+
+Рендеринг через `kustomize`, который управляется из репозитория:
 
 ```sh
+make kustomize
+./bin/kustomize build config/default
 ./bin/kustomize build config/default-dataplane
 ```
 
-### Деплой Local Mode
+Развёртывание локального режима:
 
 ```sh
 make deploy IMG=ghcr.io/voronkov44/k8s-lb-controller:dev
 ```
 
-### Деплой Dataplane Mode
+Развёртывание режима dataplane:
 
 ```sh
 make deploy-dataplane \
@@ -126,107 +123,61 @@ make deploy-dataplane \
   DATAPLANE_IMG=ghcr.io/voronkov44/k8s-lb-controller-dataplane:dev
 ```
 
-В dataplane Kustomize entrypoint контроллер привязан к in-cluster service URL:
-
-`http://k8s-lb-controller-dataplane.k8s-lb-controller-system.svc:8090`
-
-Dataplane-манифесты также включают host networking, `shareProcessNamespace`, реальный HAProxy sidecar и netlink-based IP attachment на интерфейс `eth0` по умолчанию. Exec mode остаётся доступным через настройку dataplane IP attach mode.
+В dataplane-оверлее контроллер подключён к внутрикластерному URL dataplane `http://k8s-lb-controller-dataplane.k8s-lb-controller-system.svc:8090`. Развёртывание dataplane по умолчанию включает host networking, `shareProcessNamespace` и привязку внешнего IP к интерфейсу `eth0`.
 
 ## Helm
 
-Helm chart поддерживает оба режима и не удаляет local mode.
+Helm chart также поддерживает оба режима.
+
+Установка локального режима из локальной копии репозитория:
+
+```sh
+helm install k8s-lb-controller ./charts/k8s-lb-controller \
+  -n k8s-lb-controller-system \
+  --create-namespace
+```
+
+Установка режима dataplane из локальной копии репозитория:
+
+```sh
+helm install k8s-lb-controller ./charts/k8s-lb-controller \
+  -n k8s-lb-controller-system \
+  --create-namespace \
+  --set controller.providerMode=dataplane-api \
+  --set dataplane.enabled=true
+```
+
+Если `controller.dataplane.apiURL` не задан и `dataplane.enabled=true`, chart автоматически формирует внутрикластерный URL сервиса dataplane. В режиме dataplane по умолчанию используется `dataplane.ipAttach.mode=netlink`; `exec` остаётся запасным вариантом.
 
 Подробная документация по chart:
 
 - [charts/k8s-lb-controller/README.md](charts/k8s-lb-controller/README.md)
 - [charts/k8s-lb-controller/README.ru.md](charts/k8s-lb-controller/README.ru.md)
 
-### Template Local Mode
+## Проверка и Smoke-Сценарии
 
-```sh
-helm template k8s-lb-controller ./charts/k8s-lb-controller
-```
+`make verify-dataplane` выполняет проверки готовности без запуска живого dataplane. В него входят:
 
-### Template Dataplane Mode
+- `go test ./...`
+- `make lint`
+- сборка контроллера и dataplane
+- рендеринг Kustomize для локального режима и режима dataplane
+- `helm lint` и `helm template` для локального режима и режима dataplane
 
-```sh
-helm template k8s-lb-controller ./charts/k8s-lb-controller \
-  --set controller.providerMode=dataplane-api \
-  --set dataplane.enabled=true
-```
+`make smoke-dataplane-kind` запускает автоматизированный Kind smoke-сценарий: собирает образы, разворачивает контроллер и dataplane, поднимает демонстрационную нагрузку и проверяет выделение внешнего IP, его привязку к интерфейсу, готовность HAProxy listener, содержимое сгенерированной конфигурации и сквозную HTTP-доступность.
 
-Для dataplane mode chart теперь использует значения:
+`make test-e2e-dataplane` запускает e2e-набор тестов для режима dataplane в Kind. `make kind-up-dataplane` и `make kind-down-dataplane` удобны, когда кластер для smoke-проверки нужно поднять и разобрать вручную.
 
-- `controller.providerMode`
-- `controller.dataplane.apiURL`
-- `controller.dataplane.apiTimeout`
-- `dataplane.enabled`
-- `dataplane.hostNetwork`
-- `dataplane.shareProcessNamespace`
-- `dataplane.image.*`
-- `dataplane.interface`
-- `dataplane.ipAttach.*`
-- `dataplane.http.port`
-- `dataplane.http.addr`
-- `dataplane.haproxy.*`
-- `dataplane.haproxy.image.*`
-- `dataplane.logLevel`
-- `dataplane.gracefulShutdownTimeout`
-- `dataplane.resources`
-- `dataplane.nodeSelector`
-- `dataplane.tolerations`
-- `dataplane.affinity`
+Подробные инструкции по проверке:
 
-Если `controller.dataplane.apiURL` не задан и `dataplane.enabled=true`, chart автоматически генерирует in-cluster URL dataplane service.
-Chart defaults также включают реальный dataplane runtime path с host networking, shared-pid HAProxy sidecar и `dataplane.ipAttach.mode=netlink`. Exec mode остаётся fallback-вариантом.
+- smoke-проверка: [docs/dataplane-smoke.md](docs/dataplane-smoke.md), [docs/dataplane-smoke.ru.md](docs/dataplane-smoke.ru.md)
+- чеклист готовности: [docs/release-checklist.md](docs/release-checklist.md), [docs/release-checklist.ru.md](docs/release-checklist.ru.md)
 
-## Runtime-Конфигурация
+## Текущие Ограничения
 
-Контроллер по-прежнему использует исходные переменные окружения для IP allocation и локального HAProxy режима.
-Stage 1 добавил:
+Текущая реализация сознательно уже, чем полноценная промышленная платформа балансировки нагрузки. Для задокументированного и проверенного пути всё ещё остаются вне области охвата:
 
-- `K8S_LB_CONTROLLER_PROVIDER_MODE`
-- `K8S_LB_CONTROLLER_DATAPLANE_API_URL`
-- `K8S_LB_CONTROLLER_DATAPLANE_API_TIMEOUT`
-
-Dataplane server использует:
-
-- `K8S_LB_DATAPLANE_HTTP_ADDR`
-- `K8S_LB_DATAPLANE_HAPROXY_CONFIG_PATH`
-- `K8S_LB_DATAPLANE_HAPROXY_VALIDATE_COMMAND`
-- `K8S_LB_DATAPLANE_HAPROXY_RELOAD_COMMAND`
-- `K8S_LB_DATAPLANE_HAPROXY_PID_FILE`
-- `K8S_LB_DATAPLANE_LOG_LEVEL`
-- `K8S_LB_DATAPLANE_GRACEFUL_SHUTDOWN_TIMEOUT`
-- `K8S_LB_DATAPLANE_IP_ATTACH_ENABLED`
-- `K8S_LB_DATAPLANE_IP_ATTACH_MODE`
-- `K8S_LB_DATAPLANE_INTERFACE`
-- `K8S_LB_DATAPLANE_IP_COMMAND`
-- `K8S_LB_DATAPLANE_IP_CIDR_SUFFIX`
-
-## Проверка
-
-Проверка репозитория:
-
-```sh
-go test ./...
-make lint
-```
-
-Рендер манифестов и chart:
-
-```sh
-./bin/kustomize build config/default
-./bin/kustomize build config/default-dataplane
-helm template k8s-lb-controller ./charts/k8s-lb-controller
-helm template k8s-lb-controller ./charts/k8s-lb-controller --set controller.providerMode=dataplane-api --set dataplane.enabled=true
-```
-
-## Что Отложено До Stage 6
-
-Stage 5 улучшает качество host-side IP management, но некоторые production-oriented части всё ещё осознанно отложены:
-
-- multi-node или HA dataplane placement и coordination
-- BGP, ARP/NDP, cloud-provider и другие advanced network publication semantics
-- более широкое production hardening вокруг host integration
-- live end-to-end traffic validation против развернутого dataplane
+- координация dataplane между несколькими узлами и HA-сценарии
+- публикация внешних IP через BGP, ARP, NDP или по модели cloud provider
+- более широкое производственное усиление надёжности вокруг интеграции с хостом и обработки сбоев
+- будущая публикация релизов и работа с версиями

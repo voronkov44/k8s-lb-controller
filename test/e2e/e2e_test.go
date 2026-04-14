@@ -48,6 +48,7 @@ const (
 
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string
+	var dataplanePodName string
 
 	BeforeAll(func() {
 		By("creating manager namespace")
@@ -55,9 +56,14 @@ var _ = Describe("Manager", Ordered, func() {
 		_, err := utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to create manager namespace")
 
-		By("labeling the manager namespace with restricted pod security")
+		podSecurityLevel := "restricted"
+		if isDataplaneMode() {
+			podSecurityLevel = "privileged"
+		}
+
+		By(fmt.Sprintf("labeling the manager namespace with %s pod security", podSecurityLevel))
 		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
-			"pod-security.kubernetes.io/enforce=restricted")
+			"pod-security.kubernetes.io/enforce="+podSecurityLevel)
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to label manager namespace")
 
@@ -67,14 +73,26 @@ var _ = Describe("Manager", Ordered, func() {
 		Expect(err).NotTo(HaveOccurred(), "Failed to create service test namespace")
 
 		By("deploying the controller-manager")
-		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage))
+		deployTarget := "deploy"
+		deployArgs := []string{deployTarget, fmt.Sprintf("IMG=%s", managerImage)}
+		if isDataplaneMode() {
+			deployTarget = "deploy-dataplane"
+			deployArgs = []string{deployTarget, fmt.Sprintf("IMG=%s", managerImage), fmt.Sprintf("DATAPLANE_IMG=%s", dataplaneImage)}
+		}
+
+		cmd = exec.Command("make", deployArgs...)
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
 	})
 
 	AfterAll(func() {
 		By("undeploying the controller-manager")
-		cmd := exec.Command("make", "undeploy")
+		undeployTarget := "undeploy"
+		if isDataplaneMode() {
+			undeployTarget = "undeploy-dataplane"
+		}
+
+		cmd := exec.Command("make", undeployTarget)
 		_, _ = utils.Run(cmd)
 
 		By("removing service test namespace")
@@ -98,8 +116,50 @@ var _ = Describe("Manager", Ordered, func() {
 			_, _ = fmt.Fprintf(GinkgoWriter, "Controller logs:\n%s\n", logs)
 		}
 
+		if isDataplaneMode() {
+			if dataplanePodName == "" {
+				dataplanePodName, _ = activeDataplanePod()
+			}
+
+			By("fetching dataplane pod logs")
+			logs, err := dataplaneLogs(dataplanePodName)
+			if err == nil {
+				_, _ = fmt.Fprintf(GinkgoWriter, "Dataplane logs:\n%s\n", logs)
+			}
+
+			By("fetching dataplane network state")
+			ipAddrOutput, err := dataplaneExec(dataplanePodName, "sh", "-ec", "ip -4 addr show dev eth0")
+			if err == nil {
+				_, _ = fmt.Fprintf(GinkgoWriter, "Dataplane ip addr output:\n%s\n", ipAddrOutput)
+			}
+
+			ssOutput, err := dataplaneExec(dataplanePodName, "sh", "-ec", "ss -ltnp")
+			if err == nil {
+				_, _ = fmt.Fprintf(GinkgoWriter, "Dataplane ss output:\n%s\n", ssOutput)
+			}
+
+			haproxyConfig, err := dataplaneExec(dataplanePodName, "cat", "/var/run/k8s-lb-dataplane/haproxy.cfg")
+			if err == nil {
+				_, _ = fmt.Fprintf(GinkgoWriter, "Rendered HAProxy config:\n%s\n", haproxyConfig)
+			}
+		}
+
+		By("fetching pods across all namespaces")
+		cmd := exec.Command("kubectl", "get", "pods", "-A", "-o", "wide")
+		podsOutput, err := utils.Run(cmd)
+		if err == nil {
+			_, _ = fmt.Fprintf(GinkgoWriter, "Pods:\n%s\n", podsOutput)
+		}
+
+		By("fetching services across all namespaces")
+		cmd = exec.Command("kubectl", "get", "svc", "-A")
+		servicesOutput, err := utils.Run(cmd)
+		if err == nil {
+			_, _ = fmt.Fprintf(GinkgoWriter, "Services:\n%s\n", servicesOutput)
+		}
+
 		By("fetching Kubernetes events")
-		cmd := exec.Command("kubectl", "get", "events", "-n", namespace, "--sort-by=.lastTimestamp")
+		cmd = exec.Command("kubectl", "get", "events", "-n", namespace, "--sort-by=.lastTimestamp")
 		eventsOutput, err := utils.Run(cmd)
 		if err == nil {
 			_, _ = fmt.Fprintf(GinkgoWriter, "Kubernetes events:\n%s\n", eventsOutput)
@@ -119,6 +179,26 @@ var _ = Describe("Manager", Ordered, func() {
 				controllerPodName = podName
 
 				cmd := exec.Command("kubectl", "get", "pod", controllerPodName, "-n", namespace,
+					"-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Running"))
+			}).Should(Succeed())
+		})
+
+		It("should run the dataplane pod successfully when dataplane mode is enabled", func() {
+			if !isDataplaneMode() {
+				Skip("dataplane mode is disabled")
+			}
+
+			Eventually(func(g Gomega) {
+				podName, err := activeDataplanePod()
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(podName).To(ContainSubstring("dataplane"))
+
+				dataplanePodName = podName
+
+				cmd := exec.Command("kubectl", "get", "pod", dataplanePodName, "-n", namespace,
 					"-o", "jsonpath={.status.phase}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
@@ -150,7 +230,33 @@ var _ = Describe("Manager", Ordered, func() {
 		})
 
 		It("should assign an external IP and sync provider state for matching LoadBalancer Services", func() {
-			const manifest = `
+			clientManifest := ""
+			if isDataplaneMode() {
+				clientManifest = `
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-client
+  namespace: k8s-lb-controller-e2e
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo-client
+  template:
+    metadata:
+      labels:
+        app: demo-client
+    spec:
+      containers:
+        - name: toolbox
+          image: busybox:1.37
+          command: ["sh", "-ec", "sleep infinity"]
+`
+			}
+
+			manifest := fmt.Sprintf(`
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -171,6 +277,7 @@ spec:
           image: nginx:stable
           ports:
             - containerPort: 80
+%s
 ---
 apiVersion: v1
 kind: Service
@@ -199,7 +306,7 @@ spec:
   ports:
     - port: 81
       targetPort: 80
-`
+`, clientManifest)
 
 			By("applying Service manifests")
 			path, err := writeTempManifest("service-e2e", manifest)
@@ -217,6 +324,16 @@ spec:
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("1"))
 			}, 2*time.Minute, time.Second).Should(Succeed())
+
+			if isDataplaneMode() {
+				Eventually(func(g Gomega) {
+					cmd := exec.Command("kubectl", "get", "deployment", "demo-client", "-n", serviceNamespace,
+						"-o", "jsonpath={.status.readyReplicas}")
+					output, err := utils.Run(cmd)
+					g.Expect(err).NotTo(HaveOccurred())
+					g.Expect(output).To(Equal("1"))
+				}, 2*time.Minute, time.Second).Should(Succeed())
+			}
 
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "service", "demo-matching", "-n", serviceNamespace,
@@ -272,6 +389,49 @@ spec:
 				g.Expect(logs).To(ContainSubstring("\"backendCount\":1"))
 			}, 2*time.Minute, time.Second).Should(Succeed())
 
+			if isDataplaneMode() {
+				Eventually(func(g Gomega) {
+					if dataplanePodName == "" {
+						var err error
+						dataplanePodName, err = activeDataplanePod()
+						g.Expect(err).NotTo(HaveOccurred())
+					}
+
+					logs, err := dataplaneLogs(dataplanePodName)
+					g.Expect(err).NotTo(HaveOccurred())
+					g.Expect(logs).To(ContainSubstring("dataplane service ensured"))
+					g.Expect(logs).To(ContainSubstring("k8s-lb-controller-e2e/demo-matching"))
+				}, 2*time.Minute, time.Second).Should(Succeed())
+
+				Eventually(func(g Gomega) {
+					output, err := dataplaneExec(dataplanePodName, "sh", "-ec", "ip -4 addr show dev eth0")
+					g.Expect(err).NotTo(HaveOccurred())
+					g.Expect(output).To(ContainSubstring(defaultExternalIP + "/32"))
+				}, 2*time.Minute, time.Second).Should(Succeed())
+
+				Eventually(func(g Gomega) {
+					output, err := dataplaneExec(dataplanePodName, "sh", "-ec", "ss -ltnp")
+					g.Expect(err).NotTo(HaveOccurred())
+					g.Expect(output).To(ContainSubstring(defaultExternalIP + ":80"))
+				}, 2*time.Minute, time.Second).Should(Succeed())
+
+				Eventually(func(g Gomega) {
+					output, err := dataplaneExec(dataplanePodName, "cat", "/var/run/k8s-lb-dataplane/haproxy.cfg")
+					g.Expect(err).NotTo(HaveOccurred())
+					g.Expect(output).To(ContainSubstring("bind " + defaultExternalIP + ":80"))
+					g.Expect(output).To(ContainSubstring("backend"))
+				}, 2*time.Minute, time.Second).Should(Succeed())
+
+				Eventually(func(g Gomega) {
+					clientPodName, err := activeDemoClientPod()
+					g.Expect(err).NotTo(HaveOccurred())
+
+					output, err := execInPod(serviceNamespace, clientPodName, "toolbox", "wget", "-qO-", "http://"+defaultExternalIP+"/")
+					g.Expect(err).NotTo(HaveOccurred())
+					g.Expect(output).To(ContainSubstring("Welcome to nginx!"))
+				}, 2*time.Minute, time.Second).Should(Succeed())
+			}
+
 			By("verifying activity-dependent custom metrics after reconcile work has happened")
 			portForward, err := startMetricsPortForward()
 			Expect(err).NotTo(HaveOccurred(), "Failed to start metrics port-forward")
@@ -313,6 +473,14 @@ spec:
 				g.Expect(logs).To(ContainSubstring("\"backendCount\":2"))
 			}, 2*time.Minute, time.Second).Should(Succeed())
 
+			if isDataplaneMode() {
+				Eventually(func(g Gomega) {
+					output, err := dataplaneExec(dataplanePodName, "cat", "/var/run/k8s-lb-dataplane/haproxy.cfg")
+					g.Expect(err).NotTo(HaveOccurred())
+					g.Expect(strings.Count(output, "    server ")).To(BeNumerically(">=", 2))
+				}, 2*time.Minute, time.Second).Should(Succeed())
+			}
+
 			By("deleting the managed Service")
 			cmd = exec.Command("kubectl", "delete", "service", "demo-matching", "-n", serviceNamespace, "--wait=false")
 			_, err = utils.Run(cmd)
@@ -329,15 +497,48 @@ spec:
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(logs).To(ContainSubstring("cleaned up provider state"))
 			}, 2*time.Minute, time.Second).Should(Succeed())
+
+			if isDataplaneMode() {
+				Eventually(func(g Gomega) {
+					logs, err := dataplaneLogs(dataplanePodName)
+					g.Expect(err).NotTo(HaveOccurred())
+					g.Expect(logs).To(ContainSubstring("dataplane service deleted"))
+					g.Expect(logs).To(ContainSubstring("k8s-lb-controller-e2e/demo-matching"))
+				}, 2*time.Minute, time.Second).Should(Succeed())
+
+				Eventually(func(g Gomega) {
+					output, err := dataplaneExec(dataplanePodName, "sh", "-ec", "ip -4 addr show dev eth0")
+					g.Expect(err).NotTo(HaveOccurred())
+					g.Expect(output).NotTo(ContainSubstring(defaultExternalIP + "/32"))
+				}, 2*time.Minute, time.Second).Should(Succeed())
+
+				Eventually(func(g Gomega) {
+					output, err := dataplaneExec(dataplanePodName, "cat", "/var/run/k8s-lb-dataplane/haproxy.cfg")
+					g.Expect(err).NotTo(HaveOccurred())
+					g.Expect(output).NotTo(ContainSubstring("bind " + defaultExternalIP + ":80"))
+				}, 2*time.Minute, time.Second).Should(Succeed())
+			}
 		})
 	})
 })
 
 func activeControllerPod() (string, error) {
+	return activePod(namespace, "control-plane=controller-manager")
+}
+
+func activeDataplanePod() (string, error) {
+	return activePod(namespace, "control-plane=dataplane")
+}
+
+func activeDemoClientPod() (string, error) {
+	return activePod(serviceNamespace, "app=demo-client")
+}
+
+func activePod(podNamespace, labelSelector string) (string, error) {
 	cmd := exec.Command("kubectl", "get", "pods",
-		"-l", "control-plane=controller-manager",
+		"-l", labelSelector,
 		"-o", "go-template={{ range .items }}{{ if not .metadata.deletionTimestamp }}{{ .metadata.name }}{{ \"\\n\" }}{{ end }}{{ end }}",
-		"-n", namespace,
+		"-n", podNamespace,
 	)
 
 	output, err := utils.Run(cmd)
@@ -347,7 +548,7 @@ func activeControllerPod() (string, error) {
 
 	podNames := utils.GetNonEmptyLines(output)
 	if len(podNames) != 1 {
-		return "", fmt.Errorf("expected one controller pod, got %d", len(podNames))
+		return "", fmt.Errorf("expected one pod for selector %q in namespace %q, got %d", labelSelector, podNamespace, len(podNames))
 	}
 
 	return podNames[0], nil
@@ -355,6 +556,22 @@ func activeControllerPod() (string, error) {
 
 func controllerLogs(podName string) (string, error) {
 	cmd := exec.Command("kubectl", "logs", podName, "-n", namespace)
+	return utils.Run(cmd)
+}
+
+func dataplaneLogs(podName string) (string, error) {
+	cmd := exec.Command("kubectl", "logs", podName, "-n", namespace, "-c", "dataplane")
+	return utils.Run(cmd)
+}
+
+func dataplaneExec(podName string, args ...string) (string, error) {
+	return execInPod(namespace, podName, "dataplane", args...)
+}
+
+func execInPod(podNamespace, podName, container string, args ...string) (string, error) {
+	commandArgs := []string{"exec", podName, "-n", podNamespace, "-c", container, "--"}
+	commandArgs = append(commandArgs, args...)
+	cmd := exec.Command("kubectl", commandArgs...)
 	return utils.Run(cmd)
 }
 

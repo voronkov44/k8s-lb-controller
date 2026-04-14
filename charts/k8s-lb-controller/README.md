@@ -1,15 +1,15 @@
 # k8s-lb-controller Helm Chart
 
-This chart installs `k8s-lb-controller` and supports both deployment modes introduced by the repository:
+This chart installs `k8s-lb-controller` and supports both controller provider modes available in the repository today:
 
-- `local-haproxy`: controller-only mode, still the default
-- `dataplane-api`: controller + standalone dataplane server mode
+- `local-haproxy`: the default controller-only mode
+- `dataplane-api`: the controller plus a separate dataplane deployment and service
 
-[Русская версия](README.ru.md)
+Russian version: [README.ru.md](README.ru.md)
 
-Repository-level architecture and rollout context are documented in [README.md](../../README.md).
+Repository overview: [../../README.md](../../README.md)
 
-## What The Chart Installs
+## What The Chart Deploys
 
 Always:
 
@@ -24,7 +24,9 @@ When `dataplane.enabled=true`:
 
 - dataplane `Deployment`
 - dataplane `Service`
-- an HAProxy sidecar in the dataplane pod
+- HAProxy sidecar in the dataplane pod
+
+By default, the chart deploys only the controller. Dataplane resources are added only when dataplane mode is enabled.
 
 ## Installation
 
@@ -32,27 +34,25 @@ OCI chart reference:
 
 `oci://ghcr.io/voronkov44/charts/k8s-lb-controller`
 
-### Local Mode
+Install local mode from this repository checkout:
 
 ```bash
-helm install k8s-lb-controller oci://ghcr.io/voronkov44/charts/k8s-lb-controller \
-  --version 0.1.0 \
+helm install k8s-lb-controller ./charts/k8s-lb-controller \
   -n k8s-lb-controller-system \
   --create-namespace
 ```
 
-### Dataplane Mode
+Install dataplane mode from this repository checkout:
 
 ```bash
-helm install k8s-lb-controller oci://ghcr.io/voronkov44/charts/k8s-lb-controller \
-  --version 0.1.0 \
+helm install k8s-lb-controller ./charts/k8s-lb-controller \
   -n k8s-lb-controller-system \
   --create-namespace \
   --set controller.providerMode=dataplane-api \
   --set dataplane.enabled=true
 ```
 
-For a checkout of this repository, replace the OCI reference with `./charts/k8s-lb-controller`.
+If you prefer the published OCI chart, replace `./charts/k8s-lb-controller` with the OCI reference above and add `--version 0.1.0`.
 
 ## Important Values
 
@@ -72,32 +72,42 @@ For a checkout of this repository, replace the OCI reference with `./charts/k8s-
 
 | Value | Description |
 | --- | --- |
-| `dataplane.enabled` | Enables the dataplane Deployment and Service. |
-| `dataplane.hostNetwork`, `dataplane.shareProcessNamespace` | Pod-level runtime wiring for the real dataplane listener. |
-| `dataplane.image.repository`, `dataplane.image.tag`, `dataplane.image.pullPolicy` | Dataplane image settings. |
-| `dataplane.interface`, `dataplane.ipAttach.*` | Host interface selection plus netlink or exec-based external IP attachment settings for controlled environments. |
-| `dataplane.http.port` | ClusterIP Service port and container port for the dataplane API. |
-| `dataplane.http.addr` | Optional explicit `K8S_LB_DATAPLANE_HTTP_ADDR`; when empty the chart derives it from `dataplane.http.port`. |
-| `dataplane.haproxy.image.*` | Sidecar image settings for the HAProxy runtime container. |
-| `dataplane.haproxy.configPath`, `dataplane.haproxy.pidFile` | Shared runtime file paths used by the API container and the HAProxy sidecar. |
-| `dataplane.haproxy.validateCommand` | HAProxy validation command run by the dataplane API container before replacing the active config. |
-| `dataplane.haproxy.reloadCommand` | HAProxy reload command run by the dataplane API container after a successful config update. |
-| `dataplane.logLevel` | Dataplane log verbosity. |
-| `dataplane.resources`, `dataplane.nodeSelector`, `dataplane.tolerations`, `dataplane.affinity` | Standard pod scheduling and resource settings for the dataplane API container. |
+| `dataplane.enabled` | Enables the dataplane `Deployment` and `Service`. |
+| `dataplane.image.repository`, `dataplane.image.tag`, `dataplane.image.pullPolicy` | Dataplane API image settings. |
+| `dataplane.http.port`, `dataplane.http.addr` | Dataplane API listener address and service port. |
+| `dataplane.hostNetwork`, `dataplane.shareProcessNamespace` | Runtime wiring for the in-cluster dataplane rollout. |
+| `dataplane.interface` | Host interface used for external IP attachment in dataplane mode. |
+| `dataplane.ipAttach.enabled` | Enables host-side IP attachment in the dataplane rollout. |
+| `dataplane.ipAttach.mode` | External IP attachment backend: `netlink` or `exec`. |
+| `dataplane.ipAttach.command`, `dataplane.ipAttach.cidrSuffix` | Exec-backend command and attached CIDR width. |
+| `dataplane.haproxy.image.*` | HAProxy sidecar image settings. |
+| `dataplane.haproxy.configPath`, `dataplane.haproxy.pidFile` | Shared runtime files used by the dataplane API container and HAProxy sidecar. |
+| `dataplane.haproxy.validateCommand`, `dataplane.haproxy.reloadCommand` | Commands used during config validation and atomic reload. |
+| `dataplane.logLevel`, `dataplane.gracefulShutdownTimeout` | Dataplane runtime behavior. |
+| `dataplane.resources`, `dataplane.nodeSelector`, `dataplane.tolerations`, `dataplane.affinity` | Resource and scheduling settings for the dataplane API pod. |
 
-## URL Wiring
+### Metrics and Monitoring Values
 
-When:
+| Value | Description |
+| --- | --- |
+| `metrics.service.enabled` | Creates the metrics `Service`. |
+| `metrics.serviceMonitor.enabled` | Creates a `ServiceMonitor` when Prometheus Operator integration is wanted. |
+
+## Dataplane URL Wiring
+
+When all of the following are true:
 
 - `controller.providerMode=dataplane-api`
 - `dataplane.enabled=true`
 - `controller.dataplane.apiURL` is empty
 
-the chart generates the controller dataplane URL automatically as:
+the chart generates the controller-side dataplane URL automatically as:
 
 `http://<release>-k8s-lb-controller-dataplane.<namespace>.svc:<dataplane.http.port>`
 
 If `controller.dataplane.apiURL` is set explicitly, that value overrides the generated in-cluster service URL.
+
+The chart also validates that `controller.providerMode=dataplane-api` must be paired with either `dataplane.enabled=true` or a non-empty `controller.dataplane.apiURL`.
 
 ## Example Values
 
@@ -108,9 +118,9 @@ controller:
   providerMode: local-haproxy
   loadBalancerClass: lab.local/service-lb
   ipPool:
-    - 10.0.0.240
-    - 10.0.0.241
-    - 10.0.0.242
+    - 203.0.113.10
+    - 203.0.113.11
+    - 203.0.113.12
 ```
 
 ### Dataplane Mode
@@ -134,15 +144,14 @@ dataplane:
     pidFile: /var/run/k8s-lb-dataplane/haproxy.pid
 ```
 
-## Notes
+## Scope and Limitations
 
-- Local mode remains available and is still the chart default.
-- Dataplane mode now runs the dataplane API server plus an HAProxy sidecar in one pod.
-- The stage-5 dataplane runtime is intended for controlled single-node and lab environments.
-- Dataplane mode enables host networking and elevated networking permissions in the dataplane pod for host-side IP attachment.
-- `dataplane.ipAttach.mode` defaults to `netlink`, and `exec` remains available as a fallback.
-- Broader production networking semantics are still deferred.
-- `ServiceMonitor` support remains optional and is rendered only when the existing metrics settings enable it.
+- Local mode remains available, backward-compatible, and is still the chart default.
+- Dataplane mode deploys a standalone dataplane API plus an HAProxy sidecar. It does not create a distributed multi-node dataplane system.
+- In the current chart defaults, dataplane mode uses host networking, `shareProcessNamespace`, and host-side external IP attachment.
+- `dataplane.ipAttach.mode` defaults to `netlink`; `exec` remains available as a fallback.
+- The current dataplane rollout is intended for controlled single-node and lab environments.
+- Multi-node or HA dataplane coordination, BGP, ARP, NDP, cloud-provider-style publication, and broader production hardening are intentionally outside the current scope.
 
 ## Verification
 
@@ -151,7 +160,14 @@ helm lint ./charts/k8s-lb-controller
 helm lint ./charts/k8s-lb-controller --set controller.providerMode=dataplane-api --set dataplane.enabled=true
 helm template k8s-lb-controller ./charts/k8s-lb-controller
 helm template k8s-lb-controller ./charts/k8s-lb-controller --set controller.providerMode=dataplane-api --set dataplane.enabled=true
+make verify-dataplane
+make smoke-dataplane-kind
 ```
+
+For detailed controlled-environment validation and release-readiness guidance, see:
+
+- Smoke validation: [../../docs/dataplane-smoke.md](../../docs/dataplane-smoke.md), [../../docs/dataplane-smoke.ru.md](../../docs/dataplane-smoke.ru.md)
+- Release-readiness checklist: [../../docs/release-checklist.md](../../docs/release-checklist.md), [../../docs/release-checklist.ru.md](../../docs/release-checklist.ru.md)
 
 ## Uninstall
 

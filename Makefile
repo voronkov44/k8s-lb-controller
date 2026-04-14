@@ -111,6 +111,7 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 # The default e2e setup assumes Kind is pre-installed and builds/loads the manager image locally.
 # Adjust test/e2e if you switch to a different local Kubernetes provider.
 KIND_CLUSTER ?= k8s-lb-controller-test-e2e
+DATAPLANE_KIND_CLUSTER ?= k8s-lb-controller-dataplane-smoke
 
 .PHONY: setup-test-e2e
 setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
@@ -131,9 +132,23 @@ test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expect
 	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e ./test/e2e/ -v -ginkgo.v
 	$(MAKE) cleanup-test-e2e
 
+.PHONY: test-e2e-dataplane
+test-e2e-dataplane: manifests generate fmt vet ## Run the dataplane-mode e2e tests on Kind.
+	@$(MAKE) setup-test-e2e KIND_CLUSTER=$(DATAPLANE_KIND_CLUSTER)
+	E2E_DEPLOY_MODE=dataplane KIND=$(KIND) KIND_CLUSTER=$(DATAPLANE_KIND_CLUSTER) go test -tags=e2e ./test/e2e/ -v -ginkgo.v
+	$(MAKE) cleanup-test-e2e KIND_CLUSTER=$(DATAPLANE_KIND_CLUSTER)
+
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
+
+.PHONY: kind-up-dataplane
+kind-up-dataplane: ## Create or reuse the Kind cluster used for dataplane smoke validation.
+	@$(MAKE) setup-test-e2e KIND_CLUSTER=$(DATAPLANE_KIND_CLUSTER)
+
+.PHONY: kind-down-dataplane
+kind-down-dataplane: ## Delete the Kind cluster used for dataplane smoke validation.
+	@$(KIND) delete cluster --name $(DATAPLANE_KIND_CLUSTER)
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
@@ -146,6 +161,26 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 .PHONY: lint-config
 lint-config: golangci-lint ## Verify golangci-lint linter configuration
 	"$(GOLANGCI_LINT)" config verify
+
+.PHONY: verify-dataplane
+verify-dataplane: manifests generate fmt vet kustomize ## Run release-readiness checks for the dataplane path short of the live Kind smoke test.
+	go test ./...
+	$(MAKE) lint
+	$(MAKE) build
+	$(MAKE) build-dataplane
+	"$(KUSTOMIZE)" build config/default >/dev/null
+	"$(KUSTOMIZE)" build config/default-dataplane >/dev/null
+	helm lint ./charts/k8s-lb-controller
+	helm lint ./charts/k8s-lb-controller --set controller.providerMode=dataplane-api --set dataplane.enabled=true
+	helm template k8s-lb-controller ./charts/k8s-lb-controller >/dev/null
+	helm template k8s-lb-controller ./charts/k8s-lb-controller --set controller.providerMode=dataplane-api --set dataplane.enabled=true >/dev/null
+
+.PHONY: smoke-dataplane
+smoke-dataplane: smoke-dataplane-kind ## Alias for the Kind-based dataplane smoke validation flow.
+
+.PHONY: smoke-dataplane-kind
+smoke-dataplane-kind: ## Build, deploy, and validate controller + dataplane mode on a Kind cluster with diagnostics on failure.
+	KIND_CLUSTER=$(DATAPLANE_KIND_CLUSTER) ./hack/smoke-dataplane-kind.sh
 
 ##@ Build
 

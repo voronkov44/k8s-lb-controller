@@ -100,6 +100,22 @@ func TestNetlinkManagerReturnsOperationFailure(t *testing.T) {
 	}
 }
 
+func TestNetlinkManagerListFiltersOutNonManagedPrefixLengths(t *testing.T) {
+	client := newFakeNetlinkClient("eth0", "203.0.113.10")
+	client.addPrefix("eth0", netip.MustParsePrefix("172.18.0.2/16"))
+	manager := newTestNetlinkManager(t, client)
+
+	addresses, err := manager.List(context.Background())
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+
+	want := []netip.Addr{netip.MustParseAddr("203.0.113.10")}
+	if !slices.Equal(addresses, want) {
+		t.Fatalf("List() = %v, want %v", addresses, want)
+	}
+}
+
 func newTestNetlinkManager(t *testing.T, client netlinkClient) Manager {
 	t.Helper()
 
