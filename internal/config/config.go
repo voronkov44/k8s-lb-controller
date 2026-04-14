@@ -19,6 +19,7 @@ package config
 import (
 	"fmt"
 	"net/netip"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -48,12 +49,18 @@ const (
 	EnvGracefulShutdownTimeout = "K8S_LB_CONTROLLER_GRACEFUL_SHUTDOWN_TIMEOUT"
 	// EnvLogLevel configures the controller log level.
 	EnvLogLevel = "K8S_LB_CONTROLLER_LOG_LEVEL"
+	// EnvProviderMode configures which provider implementation is used at runtime.
+	EnvProviderMode = "K8S_LB_CONTROLLER_PROVIDER_MODE"
 	// EnvHAProxyConfigPath configures where the rendered HAProxy config is written.
 	EnvHAProxyConfigPath = "K8S_LB_CONTROLLER_HAPROXY_CONFIG_PATH"
 	// EnvHAProxyValidateCommand configures an optional command used to validate a candidate HAProxy config.
 	EnvHAProxyValidateCommand = "K8S_LB_CONTROLLER_HAPROXY_VALIDATE_COMMAND"
 	// EnvHAProxyReloadCommand configures an optional command used to reload HAProxy after updating the config.
 	EnvHAProxyReloadCommand = "K8S_LB_CONTROLLER_HAPROXY_RELOAD_COMMAND"
+	// EnvDataplaneAPIURL configures the base URL for the remote dataplane API provider.
+	EnvDataplaneAPIURL = "K8S_LB_CONTROLLER_DATAPLANE_API_URL"
+	// EnvDataplaneAPITimeout configures the HTTP timeout for the remote dataplane API provider.
+	EnvDataplaneAPITimeout = "K8S_LB_CONTROLLER_DATAPLANE_API_TIMEOUT"
 )
 
 const (
@@ -73,12 +80,16 @@ const (
 	DefaultGracefulShutdownTimeout = 15 * time.Second
 	// DefaultLogLevel is the default structured log level.
 	DefaultLogLevel = LogLevelInfo
+	// DefaultProviderMode keeps the current local HAProxy provider as the default runtime mode.
+	DefaultProviderMode = ProviderModeLocalHAProxy
 	// DefaultHAProxyConfigPath is the default path for the rendered HAProxy config file.
 	DefaultHAProxyConfigPath = "/tmp/k8s-lb-controller-haproxy.cfg"
 	// DefaultHAProxyValidateCommand disables config validation by default.
 	DefaultHAProxyValidateCommand = ""
 	// DefaultHAProxyReloadCommand disables reload execution by default.
 	DefaultHAProxyReloadCommand = ""
+	// DefaultDataplaneAPITimeout is the default HTTP timeout for the remote dataplane API provider.
+	DefaultDataplaneAPITimeout = 10 * time.Second
 )
 
 const (
@@ -109,9 +120,27 @@ type Config struct {
 	RequeueAfter            time.Duration
 	GracefulShutdownTimeout time.Duration
 	LogLevel                string
+	ProviderMode            ProviderMode
 	HAProxyConfigPath       string
 	HAProxyValidateCommand  string
 	HAProxyReloadCommand    string
+	DataplaneAPIURL         string
+	DataplaneAPITimeout     time.Duration
+}
+
+// ProviderMode selects which runtime provider implementation is active.
+type ProviderMode string
+
+const (
+	// ProviderModeLocalHAProxy uses the existing local file-based HAProxy provider.
+	ProviderModeLocalHAProxy ProviderMode = "local-haproxy"
+	// ProviderModeDataplaneAPI uses a remote dataplane API provider.
+	ProviderModeDataplaneAPI ProviderMode = "dataplane-api"
+)
+
+var supportedProviderModes = map[ProviderMode]struct{}{
+	ProviderModeLocalHAProxy: {},
+	ProviderModeDataplaneAPI: {},
 }
 
 // LoadDotEnv loads variables from .env without overriding the existing environment.
@@ -145,6 +174,7 @@ func Load() (Config, error) {
 		HealthAddr:             stringEnv(EnvHealthAddr, DefaultHealthAddr),
 		LoadBalancerClass:      stringEnv(EnvLoadBalancerClass, DefaultLoadBalancerClass),
 		LogLevel:               normalizeLogLevel(stringEnv(EnvLogLevel, DefaultLogLevel)),
+		ProviderMode:           normalizeProviderMode(stringEnv(EnvProviderMode, string(DefaultProviderMode))),
 		HAProxyConfigPath:      stringEnv(EnvHAProxyConfigPath, DefaultHAProxyConfigPath),
 		HAProxyValidateCommand: stringEnv(EnvHAProxyValidateCommand, DefaultHAProxyValidateCommand),
 		HAProxyReloadCommand:   stringEnv(EnvHAProxyReloadCommand, DefaultHAProxyReloadCommand),
@@ -174,11 +204,29 @@ func Load() (Config, error) {
 	}
 	cfg.GracefulShutdownTimeout = gracefulShutdownTimeout
 
+	dataplaneAPITimeout, err := durationEnv(EnvDataplaneAPITimeout, DefaultDataplaneAPITimeout)
+	if err != nil {
+		return Config{}, err
+	}
+	if dataplaneAPITimeout <= 0 {
+		return Config{}, fmt.Errorf("%s must be greater than zero", EnvDataplaneAPITimeout)
+	}
+	cfg.DataplaneAPITimeout = dataplaneAPITimeout
+
 	if cfg.LoadBalancerClass == "" {
 		return Config{}, fmt.Errorf("%s must not be empty", EnvLoadBalancerClass)
 	}
 
-	if cfg.HAProxyConfigPath == "" {
+	if _, ok := supportedProviderModes[cfg.ProviderMode]; !ok {
+		return Config{}, fmt.Errorf(
+			"%s must be one of: %s, %s",
+			EnvProviderMode,
+			ProviderModeLocalHAProxy,
+			ProviderModeDataplaneAPI,
+		)
+	}
+
+	if cfg.ProviderMode == ProviderModeLocalHAProxy && cfg.HAProxyConfigPath == "" {
 		return Config{}, fmt.Errorf("%s must not be empty", EnvHAProxyConfigPath)
 	}
 
@@ -190,6 +238,13 @@ func Load() (Config, error) {
 
 	if _, ok := supportedLogLevels[cfg.LogLevel]; !ok {
 		return Config{}, fmt.Errorf("%s must be one of: debug, info, warn, error", EnvLogLevel)
+	}
+
+	if cfg.ProviderMode == ProviderModeDataplaneAPI {
+		cfg.DataplaneAPIURL, err = dataplaneAPIURLFromEnv()
+		if err != nil {
+			return Config{}, err
+		}
 	}
 
 	return cfg, nil
@@ -239,4 +294,35 @@ func durationEnv(key string, defaultValue time.Duration) (time.Duration, error) 
 
 func normalizeLogLevel(level string) string {
 	return strings.ToLower(strings.TrimSpace(level))
+}
+
+func normalizeProviderMode(mode string) ProviderMode {
+	return ProviderMode(strings.ToLower(strings.TrimSpace(mode)))
+}
+
+func dataplaneAPIURLFromEnv() (string, error) {
+	value, ok := os.LookupEnv(EnvDataplaneAPIURL)
+	if !ok || strings.TrimSpace(value) == "" {
+		return "", fmt.Errorf(
+			"%s must not be empty when %s=%s",
+			EnvDataplaneAPIURL,
+			EnvProviderMode,
+			ProviderModeDataplaneAPI,
+		)
+	}
+
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil {
+		return "", fmt.Errorf("parse %s: %w", EnvDataplaneAPIURL, err)
+	}
+
+	if !parsed.IsAbs() || parsed.Host == "" {
+		return "", fmt.Errorf("%s must be an absolute URL", EnvDataplaneAPIURL)
+	}
+
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", fmt.Errorf("%s must use http or https", EnvDataplaneAPIURL)
+	}
+
+	return parsed.String(), nil
 }

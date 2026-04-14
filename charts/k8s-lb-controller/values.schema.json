@@ -380,6 +380,13 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "providerMode": {
+          "type": "string",
+          "enum": [
+            "local-haproxy",
+            "dataplane-api"
+          ]
+        },
         "leaderElection": {
           "type": "boolean"
         },
@@ -411,6 +418,22 @@
             "error"
           ]
         },
+        "dataplane": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "apiURL": {
+              "type": "string"
+            },
+            "apiTimeout": {
+              "$ref": "#/definitions/durationString"
+            }
+          },
+          "required": [
+            "apiURL",
+            "apiTimeout"
+          ]
+        },
         "haproxy": {
           "type": "object",
           "additionalProperties": false,
@@ -434,13 +457,377 @@
         }
       },
       "required": [
+        "providerMode",
         "leaderElection",
         "loadBalancerClass",
         "ipPool",
         "requeueAfter",
         "gracefulShutdownTimeout",
         "logLevel",
+        "dataplane",
         "haproxy"
+      ]
+    },
+    "dataplane": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "replicaCount": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "hostNetwork": {
+          "type": "boolean"
+        },
+        "shareProcessNamespace": {
+          "type": "boolean"
+        },
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pullPolicy": {
+              "type": "string",
+              "enum": [
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
+            },
+            "tag": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "repository",
+            "pullPolicy",
+            "tag"
+          ]
+        },
+        "podSecurityContext": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "fsGroup": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "fsGroupChangePolicy": {
+              "type": "string"
+            },
+            "runAsGroup": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "runAsNonRoot": {
+              "type": "boolean"
+            },
+            "runAsUser": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "seLinuxOptions": {
+              "type": "object"
+            },
+            "seccompProfile": {
+              "$ref": "#/definitions/seccompProfile"
+            },
+            "supplementalGroups": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "sysctls": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/sysctl"
+              }
+            },
+            "windowsOptions": {
+              "type": "object"
+            }
+          }
+        },
+        "containerSecurityContext": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "allowPrivilegeEscalation": {
+              "type": "boolean"
+            },
+            "capabilities": {
+              "$ref": "#/definitions/capabilities"
+            },
+            "privileged": {
+              "type": "boolean"
+            },
+            "procMount": {
+              "type": "string"
+            },
+            "readOnlyRootFilesystem": {
+              "type": "boolean"
+            },
+            "runAsGroup": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "runAsNonRoot": {
+              "type": "boolean"
+            },
+            "runAsUser": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "seLinuxOptions": {
+              "type": "object"
+            },
+            "seccompProfile": {
+              "$ref": "#/definitions/seccompProfile"
+            },
+            "windowsOptions": {
+              "type": "object"
+            }
+          }
+        },
+        "http": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "addr": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "port",
+            "addr"
+          ]
+        },
+        "interface": {
+          "type": "string"
+        },
+        "ipAttach": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "mode": {
+              "type": "string",
+              "enum": [
+                "netlink",
+                "exec"
+              ]
+            },
+            "command": {
+              "type": "string"
+            },
+            "cidrSuffix": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 32
+            }
+          },
+          "required": [
+            "enabled",
+            "mode",
+            "cidrSuffix"
+          ]
+        },
+        "haproxy": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "image": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "repository": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "pullPolicy": {
+                  "type": "string",
+                  "enum": [
+                    "Always",
+                    "IfNotPresent",
+                    "Never"
+                  ]
+                },
+                "tag": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "repository",
+                "pullPolicy",
+                "tag"
+              ]
+            },
+            "configPath": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pidFile": {
+              "type": "string",
+              "minLength": 1
+            },
+            "validateCommand": {
+              "type": "string"
+            },
+            "reloadCommand": {
+              "type": "string"
+            },
+            "securityContext": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "allowPrivilegeEscalation": {
+                  "type": "boolean"
+                },
+                "capabilities": {
+                  "$ref": "#/definitions/capabilities"
+                },
+                "privileged": {
+                  "type": "boolean"
+                },
+                "procMount": {
+                  "type": "string"
+                },
+                "readOnlyRootFilesystem": {
+                  "type": "boolean"
+                },
+                "runAsGroup": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "runAsNonRoot": {
+                  "type": "boolean"
+                },
+                "runAsUser": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "seLinuxOptions": {
+                  "type": "object"
+                },
+                "seccompProfile": {
+                  "$ref": "#/definitions/seccompProfile"
+                },
+                "windowsOptions": {
+                  "type": "object"
+                }
+              }
+            },
+            "resources": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "limits": {
+                  "$ref": "#/definitions/resourceList"
+                },
+                "requests": {
+                  "$ref": "#/definitions/resourceList"
+                }
+              }
+            }
+          },
+          "required": [
+            "image",
+            "configPath",
+            "pidFile",
+            "validateCommand",
+            "reloadCommand",
+            "securityContext",
+            "resources"
+          ]
+        },
+        "logLevel": {
+          "type": "string",
+          "enum": [
+            "debug",
+            "info",
+            "warn",
+            "error"
+          ]
+        },
+        "gracefulShutdownTimeout": {
+          "$ref": "#/definitions/durationString"
+        },
+        "terminationGracePeriodSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "limits": {
+              "$ref": "#/definitions/resourceList"
+            },
+            "requests": {
+              "$ref": "#/definitions/resourceList"
+            }
+          }
+        },
+        "nodeSelector": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "tolerations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/toleration"
+          }
+        },
+        "affinity": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "nodeAffinity": {
+              "type": "object"
+            },
+            "podAffinity": {
+              "type": "object"
+            },
+            "podAntiAffinity": {
+              "type": "object"
+            }
+          }
+        }
+      },
+      "required": [
+        "enabled",
+        "replicaCount",
+        "hostNetwork",
+        "shareProcessNamespace",
+        "image",
+        "podSecurityContext",
+        "containerSecurityContext",
+        "http",
+        "interface",
+        "ipAttach",
+        "haproxy",
+        "logLevel",
+        "gracefulShutdownTimeout",
+        "terminationGracePeriodSeconds",
+        "resources",
+        "nodeSelector",
+        "tolerations",
+        "affinity"
       ]
     },
     "metrics": {
@@ -570,6 +957,7 @@
     "tolerations",
     "terminationGracePeriodSeconds",
     "controller",
+    "dataplane",
     "metrics",
     "health",
     "extraEnv"

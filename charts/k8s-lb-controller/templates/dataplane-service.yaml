@@ -1,0 +1,18 @@
+{{- if .Values.dataplane.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "k8s-lb-controller.dataplaneFullname" . }}
+  labels:
+    {{- include "k8s-lb-controller.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dataplane
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "k8s-lb-controller.dataplaneSelectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.dataplane.http.port }}
+      protocol: TCP
+      targetPort: http
+{{- end }}

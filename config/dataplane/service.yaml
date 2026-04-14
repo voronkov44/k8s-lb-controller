@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: dataplane
+  namespace: system
+  labels:
+    control-plane: dataplane
+    app.kubernetes.io/name: k8s-lb-controller
+    app.kubernetes.io/component: dataplane
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  type: ClusterIP
+  selector:
+    control-plane: dataplane
+    app.kubernetes.io/name: k8s-lb-controller
+    app.kubernetes.io/component: dataplane
+  ports:
+  - name: http
+    port: 8090
+    protocol: TCP
+    targetPort: http

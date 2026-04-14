@@ -62,6 +62,8 @@ spec:
           value: "15s"
         - name: K8S_LB_CONTROLLER_LOG_LEVEL
           value: "info"
+        - name: K8S_LB_CONTROLLER_PROVIDER_MODE
+          value: "local-haproxy"
         - name: K8S_LB_CONTROLLER_HAPROXY_CONFIG_PATH
           value: "/tmp/k8s-lb-controller-haproxy.cfg"
         - name: K8S_LB_CONTROLLER_HAPROXY_VALIDATE_COMMAND

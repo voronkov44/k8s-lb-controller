@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -42,6 +43,8 @@ import (
 	"github.com/voronkov44/k8s-lb-controller/internal/config"
 	"github.com/voronkov44/k8s-lb-controller/internal/controller"
 	controllermetrics "github.com/voronkov44/k8s-lb-controller/internal/metrics"
+	"github.com/voronkov44/k8s-lb-controller/internal/provider"
+	dataplaneapiprovider "github.com/voronkov44/k8s-lb-controller/internal/provider/dataplaneapi"
 	haproxyprovider "github.com/voronkov44/k8s-lb-controller/internal/provider/haproxy"
 )
 
@@ -126,15 +129,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	serviceProvider, err := haproxyprovider.NewProvider(haproxyprovider.Config{
-		ConfigPath:      cfg.HAProxyConfigPath,
-		ValidateCommand: cfg.HAProxyValidateCommand,
-		ReloadCommand:   cfg.HAProxyReloadCommand,
-	})
+	serviceProvider, err := buildProvider(cfg)
 	if err != nil {
-		setupLog.Error(err, "unable to create HAProxy provider")
+		setupLog.Error(err, "unable to create service provider", "providerMode", cfg.ProviderMode)
 		os.Exit(1)
 	}
+	logProviderConfiguration(cfg)
 	instrumentedProvider := controllermetrics.WrapProvider(serviceProvider)
 
 	if err := controller.SetupControllers(mgr, cfg, instrumentedProvider); err != nil {
@@ -159,9 +159,7 @@ func main() {
 		"loadBalancerClass", cfg.LoadBalancerClass,
 		"requeueAfter", cfg.RequeueAfter.String(),
 		"logLevel", cfg.LogLevel,
-		"haproxyConfigPath", cfg.HAProxyConfigPath,
-		"haproxyValidateEnabled", cfg.HAProxyValidateCommand != "",
-		"haproxyReloadEnabled", cfg.HAProxyReloadCommand != "",
+		"providerMode", cfg.ProviderMode,
 	)
 
 	shutdownCtx := ctrl.SetupSignalHandler()
@@ -225,6 +223,57 @@ func configureLogger(levelName string) error {
 
 	ctrl.SetLogger(ctrlzap.New(ctrlzap.UseFlagOptions(&opts)))
 	return nil
+}
+
+func buildProvider(cfg config.Config) (provider.Provider, error) {
+	switch cfg.ProviderMode {
+	case config.ProviderModeLocalHAProxy:
+		return haproxyprovider.NewProvider(haproxyprovider.Config{
+			ConfigPath:      cfg.HAProxyConfigPath,
+			ValidateCommand: cfg.HAProxyValidateCommand,
+			ReloadCommand:   cfg.HAProxyReloadCommand,
+		})
+	case config.ProviderModeDataplaneAPI:
+		return dataplaneapiprovider.NewProvider(dataplaneapiprovider.Config{
+			BaseURL: cfg.DataplaneAPIURL,
+			Timeout: cfg.DataplaneAPITimeout,
+		})
+	default:
+		return nil, fmt.Errorf("unsupported provider mode %q", cfg.ProviderMode)
+	}
+}
+
+func logProviderConfiguration(cfg config.Config) {
+	switch cfg.ProviderMode {
+	case config.ProviderModeLocalHAProxy:
+		setupLog.Info("provider configuration",
+			"providerMode", cfg.ProviderMode,
+			"haproxyConfigPath", cfg.HAProxyConfigPath,
+			"haproxyValidateEnabled", cfg.HAProxyValidateCommand != "",
+			"haproxyReloadEnabled", cfg.HAProxyReloadCommand != "",
+		)
+	case config.ProviderModeDataplaneAPI:
+		setupLog.Info("provider configuration",
+			"providerMode", cfg.ProviderMode,
+			"dataplaneAPIURL", redactURLForLog(cfg.DataplaneAPIURL),
+			"dataplaneAPITimeout", cfg.DataplaneAPITimeout.String(),
+		)
+	default:
+		setupLog.Info("provider configuration", "providerMode", cfg.ProviderMode)
+	}
+}
+
+func redactURLForLog(rawURL string) string {
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+
+	redactedURL := *parsedURL
+	redactedURL.User = nil
+	redactedURL.RawQuery = ""
+	redactedURL.Fragment = ""
+	return redactedURL.String()
 }
 
 func parseLogLevel(levelName string) (zapcore.Level, error) {

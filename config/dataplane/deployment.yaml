@@ -1,0 +1,133 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dataplane
+  namespace: system
+  labels:
+    control-plane: dataplane
+    app.kubernetes.io/name: k8s-lb-controller
+    app.kubernetes.io/component: dataplane
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      control-plane: dataplane
+      app.kubernetes.io/name: k8s-lb-controller
+      app.kubernetes.io/component: dataplane
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: dataplane
+      labels:
+        control-plane: dataplane
+        app.kubernetes.io/name: k8s-lb-controller
+        app.kubernetes.io/component: dataplane
+    spec:
+      automountServiceAccountToken: false
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      shareProcessNamespace: true
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - command:
+        - /dataplane
+        env:
+        - name: K8S_LB_DATAPLANE_HTTP_ADDR
+          value: ":8090"
+        - name: K8S_LB_DATAPLANE_HAPROXY_CONFIG_PATH
+          value: "/var/run/k8s-lb-dataplane/haproxy.cfg"
+        - name: K8S_LB_DATAPLANE_HAPROXY_VALIDATE_COMMAND
+          value: "haproxy -c -f {{config}}"
+        - name: K8S_LB_DATAPLANE_HAPROXY_RELOAD_COMMAND
+          value: "sh -ec 'pid=\"$(cat /var/run/k8s-lb-dataplane/haproxy.pid 2>/dev/null || true)\"; [ -n \"$pid\" ] || exit 0; kill -USR2 \"$pid\"'"
+        - name: K8S_LB_DATAPLANE_HAPROXY_PID_FILE
+          value: "/var/run/k8s-lb-dataplane/haproxy.pid"
+        - name: K8S_LB_DATAPLANE_LOG_LEVEL
+          value: "info"
+        - name: K8S_LB_DATAPLANE_GRACEFUL_SHUTDOWN_TIMEOUT
+          value: "15s"
+        - name: K8S_LB_DATAPLANE_IP_ATTACH_ENABLED
+          value: "true"
+        - name: K8S_LB_DATAPLANE_IP_ATTACH_MODE
+          value: "netlink"
+        - name: K8S_LB_DATAPLANE_INTERFACE
+          value: "eth0"
+        - name: K8S_LB_DATAPLANE_IP_COMMAND
+          value: "/sbin/ip"
+        - name: K8S_LB_DATAPLANE_IP_CIDR_SUFFIX
+          value: "32"
+        image: ghcr.io/voronkov44/k8s-lb-controller-dataplane:latest
+        imagePullPolicy: IfNotPresent
+        name: dataplane
+        ports:
+        - containerPort: 8090
+          name: http
+          protocol: TCP
+        securityContext:
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          runAsUser: 0
+          capabilities:
+            drop:
+            - "ALL"
+            add:
+            - "NET_ADMIN"
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: 250m
+            memory: 128Mi
+          requests:
+            cpu: 10m
+            memory: 64Mi
+        volumeMounts:
+        - mountPath: /var/run/k8s-lb-dataplane
+          name: runtime-dir
+      - name: haproxy
+        command:
+        - /bin/sh
+        - -ec
+        - |
+          while [ ! -s /var/run/k8s-lb-dataplane/haproxy.cfg ]; do
+            sleep 0.2
+          done
+          exec haproxy -W -db -f /var/run/k8s-lb-dataplane/haproxy.cfg -p /var/run/k8s-lb-dataplane/haproxy.pid
+        image: ghcr.io/voronkov44/k8s-lb-controller-dataplane:latest
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          runAsUser: 0
+          capabilities:
+            drop:
+            - "ALL"
+            add:
+            - "NET_BIND_SERVICE"
+        resources:
+          limits:
+            cpu: 250m
+            memory: 128Mi
+          requests:
+            cpu: 10m
+            memory: 64Mi
+        volumeMounts:
+        - mountPath: /var/run/k8s-lb-dataplane
+          name: runtime-dir
+      terminationGracePeriodSeconds: 20
+      volumes:
+      - emptyDir: {}
+        name: runtime-dir

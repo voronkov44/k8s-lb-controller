@@ -1,0 +1,17 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controller-manager
+  namespace: system
+spec:
+  template:
+    spec:
+      containers:
+      - name: manager
+        env:
+        - name: K8S_LB_CONTROLLER_PROVIDER_MODE
+          value: "dataplane-api"
+        - name: K8S_LB_CONTROLLER_DATAPLANE_API_URL
+          value: "http://k8s-lb-controller-dataplane.k8s-lb-controller-system.svc:8090"
+        - name: K8S_LB_CONTROLLER_DATAPLANE_API_TIMEOUT
+          value: "10s"
