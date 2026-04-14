@@ -52,7 +52,7 @@ helm install k8s-lb-controller ./charts/k8s-lb-controller \
   --set dataplane.enabled=true
 ```
 
-Если нужен опубликованный OCI chart, замените `./charts/k8s-lb-controller` на OCI reference выше и добавьте `--version 0.1.0`.
+Если нужен опубликованный OCI chart, замените `./charts/k8s-lb-controller` на OCI reference выше и добавьте `--version 0.1.1`.
 
 ## Важные Values
 
