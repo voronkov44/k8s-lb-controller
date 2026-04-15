@@ -7,7 +7,7 @@ This chart installs `k8s-lb-controller` and supports both controller provider mo
 
 Russian version: [README.ru.md](README.ru.md)
 
-Repository overview: [../../README.md](../../README.md)
+Repository overview: [README.md](../../README.md)
 
 ## What The Chart Deploys
 
