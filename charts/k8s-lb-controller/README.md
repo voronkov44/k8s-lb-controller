@@ -7,7 +7,7 @@ This chart installs `k8s-lb-controller` and supports both controller provider mo
 
 Russian version: [README.ru.md](README.ru.md)
 
-Repository overview: [../../README.md](../../README.md)
+Repository overview: [README.md](../../README.md)
 
 ## What The Chart Deploys
 
@@ -123,26 +123,63 @@ controller:
     - 203.0.113.12
 ```
 
-### Dataplane Mode
+### Dataplane Mode (generic example)
 
 ```yaml
 controller:
   providerMode: dataplane-api
+  loadBalancerClass: lab.local/service-lb
+  ipPool:
+    - 203.0.113.10
+    - 203.0.113.11
+    - 203.0.113.12
   dataplane:
     apiTimeout: 10s
 
 dataplane:
   enabled: true
+  hostNetwork: true
+  shareProcessNamespace: true
   interface: eth0
   ipAttach:
     enabled: true
     mode: netlink
+    cidrSuffix: 24
   http:
     port: 8090
   haproxy:
     configPath: /var/run/k8s-lb-dataplane/haproxy.cfg
     pidFile: /var/run/k8s-lb-dataplane/haproxy.pid
 ```
+
+Use this as a starting point and replace `interface` and `ipPool` to match your own environment.
+
+### Dataplane Mode (lab example)
+
+```yaml
+controller:
+  providerMode: dataplane-api
+  leaderElection: false
+  loadBalancerClass: iedge.local/service-lb
+  ipPool:
+    - 192.168.56.240
+    - 192.168.56.241
+    - 192.168.56.242
+  dataplane:
+    apiTimeout: 10s
+
+dataplane:
+  enabled: true
+  hostNetwork: true
+  shareProcessNamespace: true
+  interface: enp0s9
+  ipAttach:
+    enabled: true
+    mode: netlink
+    cidrSuffix: 24
+```
+
+This lab example matches a controlled single-node environment such as a VirtualBox host-only network. Adjust `interface` and `ipPool` for your own setup.
 
 ## Scope and Limitations
 

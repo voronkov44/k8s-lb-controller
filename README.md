@@ -20,20 +20,6 @@ The standalone dataplane lives in `cmd/dataplane/main.go`. In the current implem
 - a Kubernetes rollout that pairs the dataplane API container with a real HAProxy sidecar
 - external IP attachment backends for `netlink` and `exec`, with `netlink` as the default and `exec` as a fallback
 
-## What Is Verified Today
-
-The dataplane path has already been validated successfully in a controlled Kind and lab workflow:
-
-- the cluster is created
-- the controller and dataplane are deployed
-- a demo backend and a `LoadBalancer` `Service` are deployed
-- an external IP is allocated and attached on the dataplane host interface
-- HAProxy listens on the assigned external IP
-- the rendered HAProxy configuration contains the expected `bind` and backend entries
-- an HTTP request through the external IP returns the nginx page
-
-That means the dataplane mode works today in controlled single-node and lab environments. It does not mean the project is already a full production multi-node load-balancer platform.
-
 ## Deployment Modes
 
 ### Local Mode
@@ -172,12 +158,3 @@ Detailed validation guides:
 
 - Smoke validation: [docs/dataplane-smoke.md](docs/dataplane-smoke.md), [docs/dataplane-smoke.ru.md](docs/dataplane-smoke.ru.md)
 - Release-readiness checklist: [docs/release-checklist.md](docs/release-checklist.md), [docs/release-checklist.ru.md](docs/release-checklist.ru.md)
-
-## Current Limitations
-
-The current implementation is deliberately narrower than a full production load-balancer platform. The following areas are still out of scope for the documented, working path:
-
-- multi-node or HA dataplane coordination
-- BGP, ARP, NDP, or cloud-provider-style external IP publication
-- broader production hardening around host integration and failure handling
-- future release publication and versioning work

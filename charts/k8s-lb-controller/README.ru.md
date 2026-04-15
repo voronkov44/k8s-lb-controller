@@ -111,7 +111,7 @@ Chart также проверяет, что `controller.providerMode=dataplane-a
 
 ## Примеры Values
 
-### Локальный Режим
+### Локальный режим
 
 ```yaml
 controller:
@@ -123,26 +123,63 @@ controller:
     - 203.0.113.12
 ```
 
-### Режим Dataplane
+### Режим dataplane (общий пример)
 
 ```yaml
 controller:
   providerMode: dataplane-api
+  loadBalancerClass: lab.local/service-lb
+  ipPool:
+    - 203.0.113.10
+    - 203.0.113.11
+    - 203.0.113.12
   dataplane:
     apiTimeout: 10s
 
 dataplane:
   enabled: true
+  hostNetwork: true
+  shareProcessNamespace: true
   interface: eth0
   ipAttach:
     enabled: true
     mode: netlink
+    cidrSuffix: 24
   http:
     port: 8090
   haproxy:
     configPath: /var/run/k8s-lb-dataplane/haproxy.cfg
     pidFile: /var/run/k8s-lb-dataplane/haproxy.pid
 ```
+
+Этот пример можно использовать как отправную точку. Замените `interface` и `ipPool` в соответствии с вашим окружением.
+
+### Режим dataplane (лабораторный пример)
+
+```yaml
+controller:
+  providerMode: dataplane-api
+  leaderElection: false
+  loadBalancerClass: iedge.local/service-lb
+  ipPool:
+    - 192.168.56.240
+    - 192.168.56.241
+    - 192.168.56.242
+  dataplane:
+    apiTimeout: 10s
+
+dataplane:
+  enabled: true
+  hostNetwork: true
+  shareProcessNamespace: true
+  interface: enp0s9
+  ipAttach:
+    enabled: true
+    mode: netlink
+    cidrSuffix: 24
+```
+
+Этот лабораторный пример соответствует контролируемому одновузловому стенду, например VirtualBox с host-only сетью. Под свое окружение замените `interface` и `ipPool`.
 
 ## Область Применения и Ограничения
 
